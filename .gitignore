@@ -1,0 +1,5 @@
+outputs/*.jsonl
+outputs/*.json
+data/ragtruth/raw/*.jsonl
+__pycache__/
+RAG_Lesson1.pptx
