@@ -91,6 +91,10 @@ def has_negative(text: str) -> bool:
     return any(word in text for word in NEGATIVE_WORDS)
 
 
+def is_abstention(text: str) -> bool:
+    return any(pattern in text.lower() for pattern in ABSTENTION_PATTERNS)
+
+
 def classify_claim(claim: str, evidence: list[dict]) -> tuple[str, dict | None, str]:
     """Lightweight Supported/Conflict/Unsupported judge for a transparent baseline."""
     claim_terms = set(tokenize(claim))
@@ -103,7 +107,7 @@ def classify_claim(claim: str, evidence: list[dict]) -> tuple[str, dict | None, 
         coverage = overlap / max(len(claim_terms), 1)
         scored.append((coverage, overlap, item))
     coverage, overlap, best = max(scored, key=lambda row: (row[0], row[1]))
-    if any(pattern in claim.lower() for pattern in ABSTENTION_PATTERNS):
+    if is_abstention(claim):
         return "supported", best, "该片段是保守拒答，不包含新的事实断言。"
     if overlap == 0:
         return "unsupported", best, "答案片段与任一证据没有实质词项重叠。"
@@ -138,7 +142,7 @@ def span_scores(predicted: list[dict], gold: list[dict]) -> dict:
     return {"span_precision": round(precision, 4), "span_recall": round(recall, 4), "span_f1": round(f1, 4)}
 
 
-def run_sample(sample: dict, top_k: int, answer_override: str | None) -> dict:
+def run_sample(sample: dict, top_k: int, answer_override: str | None, judge_name: str, nli_judge=None) -> dict:
     verification_mode = answer_override is not None or "answer" in sample
     if verification_mode:
         evidence = sample["contexts"]
@@ -148,9 +152,18 @@ def run_sample(sample: dict, top_k: int, answer_override: str | None) -> dict:
     answer = answer_override or sample.get("answer") or generate_answer(sample["query"], evidence)
     claims = []
     for claim_info in split_claims_with_offsets(answer):
-        label, source, explanation = classify_claim(claim_info["claim"], evidence)
+        nli_scores = None
+        if judge_name == "nli" and not is_abstention(claim_info["claim"]):
+            verdict = nli_judge.classify(claim_info["claim"], evidence)
+            label = verdict["label"]
+            source = verdict["evidence"]
+            explanation = verdict["explanation"]
+            nli_scores = verdict["nli_scores"]
+        else:
+            label, source, explanation = classify_claim(claim_info["claim"], evidence)
         claims.append({**claim_info, "label": label, "evidence_id": source["id"] if source else None,
-                       "evidence_text": source["text"] if source else None, "explanation": explanation})
+                       "evidence_text": source["text"] if source else None, "explanation": explanation,
+                       "nli_scores": nli_scores})
     gold = set(sample.get("gold_evidence_ids", []))
     retrieved = {item["id"] for item in evidence}
     faithfulness = mean(item["label"] == "supported" for item in claims)
@@ -164,9 +177,20 @@ def run_sample(sample: dict, top_k: int, answer_override: str | None) -> dict:
     if "gold_hallucinated" in sample:
         metrics["response_correct"] = predicted_hallucinated == sample["gold_hallucinated"]
         metrics.update(span_scores(predicted_spans, sample.get("gold_spans", [])))
+    judge_config = {"name": judge_name}
+    if nli_judge is not None:
+        judge_config.update({
+            "model": nli_judge.model_name,
+            "revision": nli_judge.revision,
+            "device": nli_judge.device,
+            "entailment_threshold": nli_judge.entailment_threshold,
+            "contradiction_threshold": nli_judge.contradiction_threshold,
+            "max_length": nli_judge.max_length,
+        })
     return {"qid": sample["qid"], "query": sample["query"], "answer": answer,
             "generator_model": sample.get("generator_model"),
             "task_type": sample.get("task_type"), "split": sample.get("split"),
+            "judge": judge_config,
             "mode": "verification" if verification_mode else "generation",
             "provided_contexts": evidence, "claims": claims,
             "predicted_hallucinated": predicted_hallucinated, "predicted_spans": predicted_spans,
@@ -180,9 +204,39 @@ def main() -> None:
     parser.add_argument("--output", required=True, help="JSONL output path")
     parser.add_argument("--top-k", type=int, default=2)
     parser.add_argument("--answer", help="Optional fixed answer, for verifier-only tests")
+    parser.add_argument("--judge", choices=["rule", "nli"], default="rule")
+    parser.add_argument("--nli-model", default="cross-encoder/nli-deberta-v3-small")
+    parser.add_argument("--nli-revision", default="fa2804872c3b4bd748f38c0185cc85775361e735")
+    parser.add_argument("--model-cache-dir", default="models/huggingface")
+    parser.add_argument("--device", default="auto", help="auto, cpu, cuda, or a concrete device such as cuda:0")
+    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--max-length", type=int, default=512)
+    parser.add_argument("--entailment-threshold", type=float, default=0.5)
+    parser.add_argument("--contradiction-threshold", type=float, default=0.5)
     args = parser.parse_args()
+    for name, value in (("entailment", args.entailment_threshold), ("contradiction", args.contradiction_threshold)):
+        if not 0.0 <= value <= 1.0:
+            parser.error(f"--{name}-threshold must be between 0 and 1")
+
+    nli_judge = None
+    if args.judge == "nli":
+        from verification.nli_judge import NLIJudge
+        nli_judge = NLIJudge(
+            model_name=args.nli_model,
+            revision=args.nli_revision,
+            cache_dir=args.model_cache_dir,
+            device=args.device,
+            batch_size=args.batch_size,
+            max_length=args.max_length,
+            entailment_threshold=args.entailment_threshold,
+            contradiction_threshold=args.contradiction_threshold,
+        )
     samples = [json.loads(line) for line in Path(args.input).read_text(encoding="utf-8").splitlines() if line.strip()]
-    results = [run_sample(sample, args.top_k, args.answer) for sample in samples]
+    results = []
+    for index, sample in enumerate(samples, start=1):
+        results.append(run_sample(sample, args.top_k, args.answer, args.judge, nli_judge))
+        if args.judge == "nli" and (index == 1 or index % 25 == 0 or index == len(samples)):
+            print(f"NLI progress: {index}/{len(samples)}", flush=True)
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in results) + "\n", encoding="utf-8")

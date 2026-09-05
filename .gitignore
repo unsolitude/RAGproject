@@ -1,5 +1,7 @@
 outputs/*.jsonl
 outputs/*.json
 data/ragtruth/raw/*.jsonl
+models/
+.venv/
 __pycache__/
 RAG_Lesson1.pptx
