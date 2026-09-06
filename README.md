@@ -52,7 +52,12 @@ RAGproject/
 │   ├── run_baseline.py           # 规则化证据支持性基线
 │   ├── evaluate_results.py       # 批量指标与分布统计
 │   └── verification/
-│       └── nli_judge.py          # Transformer NLI Support Judge
+│       ├── nli_judge.py          # Transformer NLI Support Judge
+│       └── minicheck_judge.py    # 本地 Bespoke-MiniCheck-7B Judge
+├── scripts/slurm/
+│   └── test_minicheck.slurm      # 单卡 GPU 冒烟测试
+├── tests/
+│   └── test_minicheck_judge.py   # 不加载 GPU 的接口测试
 ├── requirements-nli.txt          # 固定版本的 NLI 运行依赖
 ├── .gitignore
 └── README.md
@@ -261,6 +266,66 @@ NLI 模式将每条 passage 作为 `premise`、答案句作为 `hypothesis`，�
 
 默认 NLI Judge 进一步提高了 Recall，但产生更多假阳性，尚未在 F1 上超过规则基线。一次只改变 entailment 阈值的初步扫描显示，使用 NLI argmax 判定（阈值 `0.0`）时开发集 Response F1 可达到 `0.5028`；该结果仍需通过正式阈值搜索脚本固化，并在冻结测试集上验证。
 
+## MiniCheck Judge（A6000 / SLURM）
+
+`MiniCheckJudge` 使用本地 `Bespoke-MiniCheck-7B` 权重和 vLLM 对答案句进行二分类支持性判断。它直接读取平铺模型目录，不需要在计算节点访问 Hugging Face；同一回答的多个 claim 会批量推理，并开启 vLLM prefix caching。输出中的 `minicheck_scores` 记录支持概率、判定阈值和各证据块概率。
+
+MiniCheck 只区分 `supported` 与 `unsupported`，不能把后者继续拆成 `conflict` 与“无证据”。若实验需要三分类错误类型，应保留 NLI Judge 作为第二阶段分类器，不能把 MiniCheck 的 `unsupported` 直接报告为 `conflict`。
+
+云端预期目录：
+
+```text
+/home/kangzj/RAGproject/models/Bespoke-MiniCheck-7B/config.json
+/home/kangzj/RAGproject/data/ragtruth/processed/qa_one.jsonl
+/home/kangzj/venvs/ragtruth-minicheck-cu121/
+```
+
+先在登录节点执行不加载模型的接口测试：
+
+```bash
+cd /home/kangzj/RAGproject
+source /home/kangzj/venvs/ragtruth-minicheck-cu121/bin/activate
+python -m unittest discover -s tests -v
+```
+
+真实 GPU 冒烟测试必须经 SLURM 提交：
+
+```bash
+cd /home/kangzj/RAGproject
+mkdir -p outputs/logs
+sbatch scripts/slurm/test_minicheck.slurm
+squeue -u "$USER"
+tail -f outputs/logs/minicheck-smoke-<JOB_ID>.log
+```
+
+成功时会生成：
+
+```text
+outputs/minicheck_smoke_result.jsonl
+outputs/minicheck_smoke_metrics.json
+outputs/logs/minicheck-smoke-<JOB_ID>.log
+```
+
+冒烟测试通过后，再将脚本的输入改为 train 开发集，或直接在取得的 GPU 作业中运行：
+
+```bash
+python -B src/run_baseline.py \
+  --input data/ragtruth/processed/qa_train_500_seed2026.jsonl \
+  --output outputs/ragtruth_qa_train_500_minicheck_predictions.jsonl \
+  --judge minicheck \
+  --minicheck-model-path models/Bespoke-MiniCheck-7B \
+  --minicheck-threshold 0.5 \
+  --minicheck-max-model-len 8192 \
+  --minicheck-tensor-parallel-size 1 \
+  --minicheck-enable-prefix-caching
+
+python -B src/evaluate_results.py \
+  --input outputs/ragtruth_qa_train_500_minicheck_predictions.jsonl \
+  --output outputs/ragtruth_qa_train_500_minicheck_metrics.json
+```
+
+只在 train 开发集上扫描 `--minicheck-threshold`。阈值冻结后，再运行固定 test 子集或完整 test 集。
+
 ## 命令行参数
 
 查看每个程序的完整参数：
@@ -285,7 +350,7 @@ python src/evaluate_results.py --help
 
 ## 当前方法与局限
 
-当前项目提供 Rule 与 NLI 两种 Support Verifier。Rule Judge 使用词项覆盖、否定极性和保守拒答规则；NLI Judge 使用预训练 DeBERTa 对 evidence-claim 文本对进行三分类。两者仍存在明显限制：
+当前项目提供 Rule、NLI 与 MiniCheck 三种 Support Verifier。Rule Judge 使用词项覆盖、否定极性和保守拒答规则；NLI Judge 使用预训练 DeBERTa 对 evidence-claim 文本对进行三分类；MiniCheck 使用本地 7B 模型进行二分类事实核验。它们仍存在明显限制：
 
 - 词项重叠不等于语义蕴含；
 - 简单否定规则容易产生大量假阳性；
@@ -305,7 +370,8 @@ python src/evaluate_results.py --help
 - [x] 构建独立 train 开发集
 - [x] 加入 NLI Support Judge
 - [ ] 固化 NLI 阈值搜索并选择开发集最优配置
-- [ ] 加入 LLM Judge 基线
+- [x] 加入 MiniCheck LLM Judge 基线
+- [ ] 在开发集上完成 MiniCheck 阈值搜索
 - [ ] 实现答案 atomic-fact 切分
 - [ ] 实现证据过滤与消融实验
 - [ ] 扩展到 RAGTruth 全任务和完整测试集

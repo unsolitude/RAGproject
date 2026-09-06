@@ -142,7 +142,14 @@ def span_scores(predicted: list[dict], gold: list[dict]) -> dict:
     return {"span_precision": round(precision, 4), "span_recall": round(recall, 4), "span_f1": round(f1, 4)}
 
 
-def run_sample(sample: dict, top_k: int, answer_override: str | None, judge_name: str, nli_judge=None) -> dict:
+def run_sample(
+    sample: dict,
+    top_k: int,
+    answer_override: str | None,
+    judge_name: str,
+    nli_judge=None,
+    minicheck_judge=None,
+) -> dict:
     verification_mode = answer_override is not None or "answer" in sample
     if verification_mode:
         evidence = sample["contexts"]
@@ -150,20 +157,40 @@ def run_sample(sample: dict, top_k: int, answer_override: str | None, judge_name
         ranked = bm25_rank(sample["query"], sample["contexts"])
         evidence = evidence_filter(sample["query"], ranked, top_k)
     answer = answer_override or sample.get("answer") or generate_answer(sample["query"], evidence)
+    claim_infos = split_claims_with_offsets(answer)
+    minicheck_verdicts = {}
+    if judge_name == "minicheck":
+        active_indices = [
+            index for index, item in enumerate(claim_infos)
+            if not is_abstention(item["claim"])
+        ]
+        verdicts = minicheck_judge.classify_many(
+            [claim_infos[index]["claim"] for index in active_indices],
+            evidence,
+        )
+        minicheck_verdicts = dict(zip(active_indices, verdicts))
+
     claims = []
-    for claim_info in split_claims_with_offsets(answer):
+    for claim_index, claim_info in enumerate(claim_infos):
         nli_scores = None
+        minicheck_scores = None
         if judge_name == "nli" and not is_abstention(claim_info["claim"]):
             verdict = nli_judge.classify(claim_info["claim"], evidence)
             label = verdict["label"]
             source = verdict["evidence"]
             explanation = verdict["explanation"]
             nli_scores = verdict["nli_scores"]
+        elif judge_name == "minicheck" and claim_index in minicheck_verdicts:
+            verdict = minicheck_verdicts[claim_index]
+            label = verdict["label"]
+            source = verdict["evidence"]
+            explanation = verdict["explanation"]
+            minicheck_scores = verdict["minicheck_scores"]
         else:
             label, source, explanation = classify_claim(claim_info["claim"], evidence)
         claims.append({**claim_info, "label": label, "evidence_id": source["id"] if source else None,
                        "evidence_text": source["text"] if source else None, "explanation": explanation,
-                       "nli_scores": nli_scores})
+                       "nli_scores": nli_scores, "minicheck_scores": minicheck_scores})
     gold = set(sample.get("gold_evidence_ids", []))
     retrieved = {item["id"] for item in evidence}
     faithfulness = mean(item["label"] == "supported" for item in claims)
@@ -187,6 +214,16 @@ def run_sample(sample: dict, top_k: int, answer_override: str | None, judge_name
             "contradiction_threshold": nli_judge.contradiction_threshold,
             "max_length": nli_judge.max_length,
         })
+    if minicheck_judge is not None:
+        judge_config.update({
+            "model": minicheck_judge.model_name,
+            "model_path": minicheck_judge.model_path,
+            "device": minicheck_judge.device,
+            "threshold": minicheck_judge.threshold,
+            "max_model_len": minicheck_judge.max_model_len,
+            "tensor_parallel_size": minicheck_judge.tensor_parallel_size,
+            "enable_prefix_caching": minicheck_judge.enable_prefix_caching,
+        })
     return {"qid": sample["qid"], "query": sample["query"], "answer": answer,
             "generator_model": sample.get("generator_model"),
             "task_type": sample.get("task_type"), "split": sample.get("split"),
@@ -204,7 +241,7 @@ def main() -> None:
     parser.add_argument("--output", required=True, help="JSONL output path")
     parser.add_argument("--top-k", type=int, default=2)
     parser.add_argument("--answer", help="Optional fixed answer, for verifier-only tests")
-    parser.add_argument("--judge", choices=["rule", "nli"], default="rule")
+    parser.add_argument("--judge", choices=["rule", "nli", "minicheck"], default="rule")
     parser.add_argument("--nli-model", default="cross-encoder/nli-deberta-v3-small")
     parser.add_argument("--nli-revision", default="fa2804872c3b4bd748f38c0185cc85775361e735")
     parser.add_argument("--model-cache-dir", default="models/huggingface")
@@ -213,10 +250,21 @@ def main() -> None:
     parser.add_argument("--max-length", type=int, default=512)
     parser.add_argument("--entailment-threshold", type=float, default=0.5)
     parser.add_argument("--contradiction-threshold", type=float, default=0.5)
+    parser.add_argument("--minicheck-model-path", default="models/Bespoke-MiniCheck-7B")
+    parser.add_argument("--minicheck-threshold", type=float, default=0.5)
+    parser.add_argument("--minicheck-max-model-len", type=int, default=8192)
+    parser.add_argument("--minicheck-tensor-parallel-size", type=int, default=1)
+    parser.add_argument(
+        "--minicheck-enable-prefix-caching",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     args = parser.parse_args()
     for name, value in (("entailment", args.entailment_threshold), ("contradiction", args.contradiction_threshold)):
         if not 0.0 <= value <= 1.0:
             parser.error(f"--{name}-threshold must be between 0 and 1")
+    if not 0.0 <= args.minicheck_threshold <= 1.0:
+        parser.error("--minicheck-threshold must be between 0 and 1")
 
     nli_judge = None
     if args.judge == "nli":
@@ -231,12 +279,29 @@ def main() -> None:
             entailment_threshold=args.entailment_threshold,
             contradiction_threshold=args.contradiction_threshold,
         )
+    minicheck_judge = None
+    if args.judge == "minicheck":
+        from verification.minicheck_judge import MiniCheckJudge
+        minicheck_judge = MiniCheckJudge(
+            model_path=args.minicheck_model_path,
+            threshold=args.minicheck_threshold,
+            max_model_len=args.minicheck_max_model_len,
+            tensor_parallel_size=args.minicheck_tensor_parallel_size,
+            enable_prefix_caching=args.minicheck_enable_prefix_caching,
+        )
     samples = [json.loads(line) for line in Path(args.input).read_text(encoding="utf-8").splitlines() if line.strip()]
     results = []
     for index, sample in enumerate(samples, start=1):
-        results.append(run_sample(sample, args.top_k, args.answer, args.judge, nli_judge))
-        if args.judge == "nli" and (index == 1 or index % 25 == 0 or index == len(samples)):
-            print(f"NLI progress: {index}/{len(samples)}", flush=True)
+        results.append(run_sample(
+            sample,
+            args.top_k,
+            args.answer,
+            args.judge,
+            nli_judge=nli_judge,
+            minicheck_judge=minicheck_judge,
+        ))
+        if args.judge in {"nli", "minicheck"} and (index == 1 or index % 25 == 0 or index == len(samples)):
+            print(f"{args.judge.upper()} progress: {index}/{len(samples)}", flush=True)
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in results) + "\n", encoding="utf-8")
