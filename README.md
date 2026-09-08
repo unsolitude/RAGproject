@@ -48,20 +48,26 @@ RAGproject/
 │       └── processed/            # 转换后的统一 JSONL 数据
 ├── outputs/                      # 逐样本预测与指标汇总（不提交）
 ├── docs/
-│   └── data_schema.md            # response、pair 与结果字段规范
+│   ├── data_schema.md            # response、pair 与结果字段规范
+│   └── label_mapping.md          # RAGTruth span 到 claim 标签映射
 ├── src/
 │   ├── prepare_ragtruth.py       # 数据关联、筛选和随机抽样
 │   ├── split_claims.py           # 回答级样本展开为 document-claim pairs
 │   ├── run_baseline.py           # 规则化证据支持性基线
 │   ├── evaluate_results.py       # 批量指标与分布统计
+│   ├── validate_pair_results.py  # 检查 pair 结果与 manifest 一致性
 │   └── verification/
 │       ├── nli_judge.py          # Transformer NLI Support Judge
 │       └── minicheck_judge.py    # 本地 Bespoke-MiniCheck-7B Judge
 ├── scripts/slurm/
+│   ├── download_minicheck.slurm  # 可选的模型下载脚本
+│   ├── run_minicheck_50.slurm    # 50-response pair 数据 GPU 实验
 │   └── test_minicheck.slurm      # 单卡 GPU 冒烟测试
 ├── tests/
-│   └── test_minicheck_judge.py   # 不加载 GPU 的接口测试
+│   ├── test_minicheck_judge.py   # 不加载 GPU 的接口测试
+│   └── test_label_projection.py  # span 到 claim 投影测试
 ├── requirements-nli.txt          # 固定版本的 NLI 运行依赖
+├── requirements-minicheck.txt    # 已验证的 A6000/CUDA 12.1 MiniCheck 依赖
 ├── .gitignore
 └── README.md
 ```
@@ -130,7 +136,7 @@ python src/evaluate_results.py `
 
 该样本包含一段人工标注的 `Evident Baseless Info`。当前基线能够在回答级识别该样本含有幻觉，并定位相应句子。
 
-`split_claims.py` 生成的文件以 claim 为单位，每行保存稳定的 `pair_id`、原回答字符位置、拼接后的 document、证据编号和最小 claim 级金标签。`run_baseline.py` 与该脚本复用同一套 `sentence_v2` 切分逻辑，避免预处理和推理阶段产生不同 claim。该版本支持普通句子、换行、编号列表和项目符号；超过 80 个轻量 token 的长 claim 会进入复核，至少 40 token 且包含并列连接词的 claim 会标为疑似多事实。两个阈值可分别通过 `--long-claim-tokens` 和 `--compound-claim-tokens` 调整。
+`split_claims.py` 生成的文件以 claim 为单位，每行保存稳定的 `pair_id`、原回答字符位置、拼接后的 document、证据编号和 claim 级金标签。`run_baseline.py` 与该脚本复用同一套 `sentence_v2` 切分逻辑，避免预处理和推理阶段产生不同 claim。该版本支持普通句子、换行、编号列表和项目符号；超过 80 个轻量 token 的长 claim 会进入复核，至少 40 token 且包含并列连接词的 claim 会标为疑似多事实。RAGTruth span 投影还会保存双向覆盖率，并把 Subtle、多 span、混合类型、低覆盖和边界重叠送入复核。切分阈值与投影规则详见 [`docs/label_mapping.md`](docs/label_mapping.md)。
 
 ### 2. 复现 200 条 QA 测试子集
 
@@ -283,6 +289,23 @@ NLI 模式将每条 passage 作为 `premise`、答案句作为 `hypothesis`，�
 
 MiniCheck 只区分 `supported` 与 `unsupported`，不能把后者继续拆成 `conflict` 与“无证据”。若实验需要三分类错误类型，应保留 NLI Judge 作为第二阶段分类器，不能把 MiniCheck 的 `unsupported` 直接报告为 `conflict`。
 
+MiniCheck 与 NLI 使用不同版本的 PyTorch/Transformers，必须使用独立虚拟环境。首次部署可执行：
+
+```bash
+python3.11 -m venv /home/kangzj/venvs/ragtruth-minicheck-cu121
+source /home/kangzj/venvs/ragtruth-minicheck-cu121/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements-minicheck.txt
+```
+
+若云端尚无权重，先创建日志目录，再提交不占 GPU 的下载任务。下载脚本会把缓存中的文件整理为测试脚本需要的平铺目录：
+
+```bash
+cd /home/kangzj/RAGproject
+mkdir -p outputs/logs
+sbatch scripts/slurm/download_minicheck.slurm
+```
+
 云端预期目录：
 
 ```text
@@ -291,7 +314,7 @@ MiniCheck 只区分 `supported` 与 `unsupported`，不能把后者继续拆成 
 /home/kangzj/venvs/ragtruth-minicheck-cu121/
 ```
 
-先在登录节点执行不加载模型的接口测试：
+先在登录节点执行 CPU-only 单元测试；这些测试不会实例化真实模型或占用 GPU：
 
 ```bash
 cd /home/kangzj/RAGproject
@@ -336,6 +359,41 @@ python -B src/evaluate_results.py \
 ```
 
 只在 train 开发集上扫描 `--minicheck-threshold`。阈值冻结后，再运行固定 test 子集或完整 test 集。
+
+### MiniCheck pair 模式（第二节 3.5）
+
+50 条固定 train response 已转换为 `data/ragtruth/processed/doc_claim_pairs_50.jsonl`。该文件包含 438 个 sentence-level pair；“50 条”指 50 个原回答，而不是只取前 50 个 claim。
+
+先只运行第一个 pair，检查平铺结果 schema：
+
+```bash
+cd /home/kangzj/RAGproject
+mkdir -p outputs/logs
+sbatch --export=ALL,PAIR_LIMIT=1,OUTPUT_PATH=/home/kangzj/RAGproject/outputs/minicheck_pair_smoke.jsonl,MANIFEST_PATH=/home/kangzj/RAGproject/outputs/logs/minicheck-pair-smoke-manifest.json scripts/slurm/run_minicheck_50.slurm
+```
+
+小测试成功后运行完整 438 个 pair：
+
+```bash
+sbatch scripts/slurm/run_minicheck_50.slurm
+```
+
+默认产物为：
+
+```text
+outputs/minicheck_results_50-<JOB_ID>.jsonl
+outputs/logs/minicheck-50-<JOB_ID>-manifest.json
+outputs/logs/minicheck-50-<JOB_ID>.log
+```
+
+每行保存 `pair_id`、`pred_label`、二值 `prediction`、支持概率 `score`、模型路径、文本字符长度和批次摊销延迟。manifest 保存精确总耗时与逐批耗时。任务结束前会自动运行无 GPU 的一致性检查；也可手动执行：
+
+```bash
+python src/validate_pair_results.py \
+  --input-pairs data/ragtruth/processed/doc_claim_pairs_50.jsonl \
+  --results outputs/minicheck_results_50-<JOB_ID>.jsonl \
+  --manifest outputs/logs/minicheck-50-<JOB_ID>-manifest.json
+```
 
 ## 命令行参数
 

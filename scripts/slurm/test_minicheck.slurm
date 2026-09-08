@@ -5,7 +5,7 @@
 #SBATCH -c=1
 #SBATCH --mem=1M
 #SBATCH --time=00:30:00
-#SBATCH --output=/home/kangzj/RAGproject/outputs/logs/minicheck-smoke-%j.log
+#SBATCH --output=outputs/logs/minicheck-smoke-%j.log
 
 set -euo pipefail
 

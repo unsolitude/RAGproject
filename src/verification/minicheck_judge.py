@@ -160,8 +160,21 @@ class MiniCheckJudge:
             } for _ in claims]
 
         document = self._document(evidence)
+        return self.classify_documents(claims, [document] * len(claims))
+
+    def classify_documents(self, claims: list[str], documents: list[str]) -> list[dict]:
+        """Score aligned document-claim pairs without rebuilding pair documents."""
+        if len(claims) != len(documents):
+            raise ValueError("claims and documents must contain the same number of items")
+        if not claims:
+            return []
+        if any(not isinstance(claim, str) or not claim.strip() for claim in claims):
+            raise ValueError("Every claim must be a non-empty string")
+        if any(not isinstance(document, str) or not document.strip() for document in documents):
+            raise ValueError("Every document must be a non-empty string")
+
         _, probabilities, used_chunks, per_chunk = self.scorer.score(
-            docs=[document] * len(claims),
+            docs=documents,
             claims=claims,
         )
         if not all(len(items) == len(claims) for items in (probabilities, used_chunks, per_chunk)):
@@ -172,7 +185,10 @@ class MiniCheckJudge:
             chunk_scores = _flatten_numbers(raw_scores)
             chunk_texts = list(chunks)
             best_index = max(range(len(chunk_scores)), key=chunk_scores.__getitem__) if chunk_scores else 0
-            selected_text = chunk_texts[min(best_index, len(chunk_texts) - 1)] if chunk_texts else document
+            selected_text = (
+                chunk_texts[min(best_index, len(chunk_texts) - 1)]
+                if chunk_texts else documents[len(verdicts)]
+            )
             supported = score >= self.threshold
             verdicts.append({
                 "pred_label": "supported" if supported else "unsupported",

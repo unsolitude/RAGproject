@@ -6,8 +6,9 @@ from typing import Any
 
 
 RESPONSE_SCHEMA_VERSION = "ragtruth_response_v1"
-PAIR_SCHEMA_VERSION = "ragtruth_doc_claim_pair_v2"
+PAIR_SCHEMA_VERSION = "ragtruth_doc_claim_pair_v3"
 RESULT_SCHEMA_VERSION = "ragtruth_baseline_result_v2"
+PAIR_RESULT_SCHEMA_VERSION = "ragtruth_minicheck_pair_result_v1"
 
 
 def get_response_text(record: dict, required: bool = True) -> str | None:

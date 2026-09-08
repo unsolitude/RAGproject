@@ -6,11 +6,20 @@ import argparse
 import json
 import math
 import re
+import time
+import uuid
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-from data_schema import RESULT_SCHEMA_VERSION, get_contexts, get_gold_spans, get_response_text
+from data_schema import (
+    PAIR_RESULT_SCHEMA_VERSION,
+    RESULT_SCHEMA_VERSION,
+    get_contexts,
+    get_gold_spans,
+    get_response_text,
+)
 from split_claims import split_claims, split_claims_with_offsets
 
 
@@ -117,6 +126,144 @@ def char_f1(prediction: str, reference: str) -> float:
 def mean(values: Iterable[float]) -> float:
     values = list(values)
     return sum(values) / len(values) if values else 0.0
+
+
+def make_run_id(judge_name: str) -> str:
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"{judge_name}-{timestamp}-{uuid.uuid4().hex[:8]}"
+
+
+def validate_pair_record(record: dict, row_number: int) -> None:
+    required = ("pair_id", "qid", "claim_id", "document", "claim", "gold_label")
+    missing = [field for field in required if field not in record]
+    if missing:
+        raise ValueError(f"Pair row {row_number} is missing fields: {missing}")
+    for field in ("pair_id", "qid", "claim_id", "document", "claim"):
+        if not isinstance(record[field], str) or not record[field].strip():
+            raise ValueError(f"Pair row {row_number} must contain non-empty {field}")
+    if record["gold_label"] not in {"supported", "conflict", "unsupported"}:
+        raise ValueError(f"Pair row {row_number} has invalid gold_label: {record['gold_label']}")
+
+
+def run_minicheck_pairs(
+    pairs: list[dict],
+    minicheck_judge,
+    batch_size: int,
+    run_id: str,
+) -> tuple[list[dict], list[dict]]:
+    """Run aligned pair batches and return result rows plus batch timing records."""
+    if batch_size < 1:
+        raise ValueError("batch_size must be at least 1")
+    pair_ids = set()
+    for row_number, pair in enumerate(pairs, start=1):
+        validate_pair_record(pair, row_number)
+        if pair["pair_id"] in pair_ids:
+            raise ValueError(f"Duplicate pair_id in input: {pair['pair_id']}")
+        pair_ids.add(pair["pair_id"])
+
+    results = []
+    batch_timings = []
+    total_batches = math.ceil(len(pairs) / batch_size) if pairs else 0
+    for batch_number, offset in enumerate(range(0, len(pairs), batch_size), start=1):
+        batch = pairs[offset:offset + batch_size]
+        started = time.perf_counter()
+        verdicts = minicheck_judge.classify_documents(
+            [pair["claim"] for pair in batch],
+            [pair["document"] for pair in batch],
+        )
+        batch_latency_ms = (time.perf_counter() - started) * 1000
+        if len(verdicts) != len(batch):
+            raise RuntimeError("MiniCheck returned a different number of results than pair inputs")
+        amortized_latency_ms = batch_latency_ms / len(batch)
+        batch_id = f"b{batch_number:05d}"
+        batch_timings.append({
+            "batch_id": batch_id,
+            "pair_count": len(batch),
+            "batch_latency_ms": round(batch_latency_ms, 3),
+            "amortized_pair_latency_ms": round(amortized_latency_ms, 3),
+        })
+
+        for pair, verdict in zip(batch, verdicts):
+            scores = verdict["minicheck_scores"]
+            support_probability = scores["support_probability"]
+            results.append({
+                "schema_version": PAIR_RESULT_SCHEMA_VERSION,
+                "run_id": run_id,
+                "pair_id": pair["pair_id"],
+                "qid": pair["qid"],
+                "claim_id": pair["claim_id"],
+                "document": pair["document"],
+                "document_ids": pair.get("document_ids", []),
+                "claim": pair["claim"],
+                "gold_label": pair["gold_label"],
+                "gold_label_raw": pair.get("gold_label_raw", []),
+                "pred_label": verdict["pred_label"],
+                "prediction": int(verdict["pred_label"] == "supported"),
+                "score": support_probability,
+                "minicheck_scores": scores,
+                "selected_evidence": verdict["evidence"],
+                "model_name": minicheck_judge.model_name,
+                "model_path": minicheck_judge.model_path,
+                "threshold": minicheck_judge.threshold,
+                "document_len": len(pair["document"]),
+                "claim_len": len(pair["claim"]),
+                "length_unit": "characters",
+                "latency_ms": round(amortized_latency_ms, 3),
+                "latency_measurement": "batch_wall_clock_amortized",
+                "batch_id": batch_id,
+                "batch_size": len(batch),
+                "review_flag": pair.get("review_flag", False),
+                "review_reasons": pair.get("review_reasons", []),
+                "source": pair.get("source"),
+                "task_type": pair.get("task_type"),
+                "split": pair.get("split"),
+                "generator_model": pair.get("generator_model"),
+            })
+        print(f"MINICHECK pair progress: {len(results)}/{len(pairs)} batches={batch_number}/{total_batches}", flush=True)
+    return results, batch_timings
+
+
+def write_pair_manifest(
+    path: Path,
+    *,
+    run_id: str,
+    input_path: Path,
+    output_path: Path,
+    pairs: list[dict],
+    results: list[dict],
+    batch_timings: list[dict],
+    minicheck_judge,
+    configured_batch_size: int,
+    started_at: datetime,
+    elapsed_seconds: float,
+) -> dict:
+    labels = Counter(row["pred_label"] for row in results)
+    manifest = {
+        "run_id": run_id,
+        "data_format": "pair",
+        "judge": "minicheck",
+        "input_file": str(input_path),
+        "output_file": str(output_path),
+        "input_pairs": len(pairs),
+        "output_pairs": len(results),
+        "unique_pair_ids": len({row["pair_id"] for row in results}),
+        "pred_label_counts": dict(sorted(labels.items())),
+        "model_name": minicheck_judge.model_name,
+        "model_path": minicheck_judge.model_path,
+        "threshold": minicheck_judge.threshold,
+        "max_model_len": minicheck_judge.max_model_len,
+        "tensor_parallel_size": minicheck_judge.tensor_parallel_size,
+        "enable_prefix_caching": minicheck_judge.enable_prefix_caching,
+        "configured_batch_size": configured_batch_size,
+        "started_at_utc": started_at.isoformat(),
+        "finished_at_utc": datetime.now(timezone.utc).isoformat(),
+        "elapsed_seconds": round(elapsed_seconds, 3),
+        "latency_definition": "Per-pair latency is batch wall-clock time divided by actual batch size.",
+        "batches": batch_timings,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return manifest
 
 
 def span_scores(predicted: list[dict], gold: list[dict]) -> dict:
@@ -236,6 +383,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run an evidence-grounded RAG baseline.")
     parser.add_argument("--input", required=True, help="JSONL data in the project schema")
     parser.add_argument("--output", required=True, help="JSONL output path")
+    parser.add_argument("--data-format", choices=["response", "pair"], default="response")
+    parser.add_argument("--limit", type=int, help="Optionally run only the first N input rows")
+    parser.add_argument("--run-id", help="Optional reproducible run identifier")
+    parser.add_argument("--manifest-output", help="Pair-mode run manifest path")
     parser.add_argument("--top-k", type=int, default=2)
     parser.add_argument("--answer", help="Optional fixed answer, for verifier-only tests")
     parser.add_argument("--judge", choices=["rule", "nli", "minicheck"], default="rule")
@@ -257,12 +408,20 @@ def main() -> None:
         default=True,
     )
     args = parser.parse_args()
+    if args.limit is not None and args.limit < 1:
+        parser.error("--limit must be at least 1")
+    if args.batch_size < 1:
+        parser.error("--batch-size must be at least 1")
+    if args.data_format == "pair" and args.judge != "minicheck":
+        parser.error("pair data format currently supports --judge minicheck; NLI pair mode is section 3.6")
     for name, value in (("entailment", args.entailment_threshold), ("contradiction", args.contradiction_threshold)):
         if not 0.0 <= value <= 1.0:
             parser.error(f"--{name}-threshold must be between 0 and 1")
     if not 0.0 <= args.minicheck_threshold <= 1.0:
         parser.error("--minicheck-threshold must be between 0 and 1")
 
+    run_started_at = datetime.now(timezone.utc)
+    run_started_clock = time.perf_counter()
     nli_judge = None
     if args.judge == "nli":
         from verification.nli_judge import NLIJudge
@@ -286,7 +445,51 @@ def main() -> None:
             tensor_parallel_size=args.minicheck_tensor_parallel_size,
             enable_prefix_caching=args.minicheck_enable_prefix_caching,
         )
-    samples = [json.loads(line) for line in Path(args.input).read_text(encoding="utf-8").splitlines() if line.strip()]
+    input_path = Path(args.input)
+    samples = [json.loads(line) for line in input_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if args.limit is not None:
+        samples = samples[:args.limit]
+    if args.data_format == "pair":
+        run_id = args.run_id or make_run_id("minicheck")
+        results, batch_timings = run_minicheck_pairs(
+            samples,
+            minicheck_judge=minicheck_judge,
+            batch_size=args.batch_size,
+            run_id=run_id,
+        )
+        output = Path(args.output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(
+            "\n".join(json.dumps(row, ensure_ascii=False) for row in results) + ("\n" if results else ""),
+            encoding="utf-8",
+        )
+        manifest_path = (
+            Path(args.manifest_output)
+            if args.manifest_output else output.with_suffix(".manifest.json")
+        )
+        manifest = write_pair_manifest(
+            manifest_path,
+            run_id=run_id,
+            input_path=input_path,
+            output_path=output,
+            pairs=samples,
+            results=results,
+            batch_timings=batch_timings,
+            minicheck_judge=minicheck_judge,
+            configured_batch_size=args.batch_size,
+            started_at=run_started_at,
+            elapsed_seconds=time.perf_counter() - run_started_clock,
+        )
+        print(json.dumps({
+            "run_id": run_id,
+            "pairs": len(results),
+            "pred_label_counts": manifest["pred_label_counts"],
+            "elapsed_seconds": manifest["elapsed_seconds"],
+            "output": str(output),
+            "manifest": str(manifest_path),
+        }, ensure_ascii=False, indent=2))
+        return
+
     results = []
     for index, sample in enumerate(samples, start=1):
         results.append(run_sample(

@@ -1,7 +1,33 @@
-outputs/*.jsonl
-outputs/*.json
-outputs/logs/
+# Generated experiment artifacts
+outputs/
+*.log
+
+# Model weights and Hugging Face caches
 models/
+
+# Local datasets that can be downloaded/rebuilt
+data/ragtruth/raw/
+
+# Python environments and caches
 .venv/
+.venv-*/
+venv/
+minicheck-src/
+.env
+.env.*
 __pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Editors and operating-system metadata
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local course material and implementation notes
 RAG_Lesson1.pptx
+lesson2.pptx
+LESSON2_PROJECT_GAP_AND_TASKS.md

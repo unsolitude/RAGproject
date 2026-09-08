@@ -16,6 +16,10 @@ SPLIT_RULE_VERSION = "sentence_v2"
 EVIDENCE_POLICY = "all_contexts_concat_v1"
 DEFAULT_LONG_CLAIM_TOKENS = 80
 DEFAULT_COMPOUND_CLAIM_TOKENS = 40
+DEFAULT_LOW_CLAIM_OVERLAP_RATIO = 0.20
+DEFAULT_LOW_SPAN_COVERAGE_RATIO = 0.50
+DEFAULT_BOUNDARY_OVERLAP_CHARS = 3
+GOLD_PROJECTION_VERSION = "ragtruth_span_overlap_v1"
 CONFLICT_LABELS = {"Evident Conflict", "Subtle Conflict"}
 UNSUPPORTED_LABELS = {"Evident Baseless Info", "Subtle Baseless Info"}
 KNOWN_GOLD_LABELS = CONFLICT_LABELS | UNSUPPORTED_LABELS
@@ -133,8 +137,73 @@ def overlapping_gold_spans(claim_start: int, claim_end: int, gold_spans: list[di
     ]
 
 
-def project_gold_label(spans: list[dict]) -> tuple[str, list[str], bool, list[str]]:
-    """Apply the minimal deterministic RAGTruth span-to-claim mapping required by pair data."""
+def validate_gold_spans(answer: str, gold_spans: list[dict]) -> None:
+    """Validate RAGTruth offsets against the exact response text before projection."""
+    for index, span in enumerate(gold_spans, start=1):
+        start, end = int(span["start"]), int(span["end"])
+        if end > len(answer):
+            raise ValueError(
+                f"Gold span {index} ends at {end}, beyond response length {len(answer)}"
+            )
+        if "text" in span and span["text"] != answer[start:end]:
+            raise ValueError(
+                f"Gold span {index} text does not match response[{start}:{end}]"
+            )
+
+
+def describe_gold_overlaps(
+    claim_start: int,
+    claim_end: int,
+    spans: list[dict],
+) -> list[dict]:
+    """Return auditable overlap measurements for each matched gold span."""
+    claim_length = claim_end - claim_start
+    details = []
+    for span in spans:
+        span_start, span_end = int(span["start"]), int(span["end"])
+        overlap_start = max(claim_start, span_start)
+        overlap_end = min(claim_end, span_end)
+        overlap_chars = max(0, overlap_end - overlap_start)
+        if not overlap_chars:
+            continue
+        details.append({
+            "label_type": str(span.get("label_type", "")),
+            "span_start": span_start,
+            "span_end": span_end,
+            "overlap_start": overlap_start,
+            "overlap_end": overlap_end,
+            "overlap_chars": overlap_chars,
+            "claim_overlap_ratio": round(overlap_chars / claim_length, 6),
+            "span_coverage_ratio": round(overlap_chars / (span_end - span_start), 6),
+            "touches_claim_start": overlap_start == claim_start,
+            "touches_claim_end": overlap_end == claim_end,
+        })
+    return details
+
+
+def _union_overlap_chars(details: list[dict]) -> int:
+    intervals = sorted((item["overlap_start"], item["overlap_end"]) for item in details)
+    if not intervals:
+        return 0
+    total = 0
+    current_start, current_end = intervals[0]
+    for start, end in intervals[1:]:
+        if start <= current_end:
+            current_end = max(current_end, end)
+        else:
+            total += current_end - current_start
+            current_start, current_end = start, end
+    return total + current_end - current_start
+
+
+def project_gold_label(
+    spans: list[dict],
+    overlap_details: list[dict] | None = None,
+    low_claim_overlap_ratio: float = DEFAULT_LOW_CLAIM_OVERLAP_RATIO,
+    low_span_coverage_ratio: float = DEFAULT_LOW_SPAN_COVERAGE_RATIO,
+    boundary_overlap_chars: int = DEFAULT_BOUNDARY_OVERLAP_CHARS,
+) -> tuple[str, list[str], bool, list[str]]:
+    """Map RAGTruth span types to a claim label and explicit review reasons."""
     if any(not span.get("label_type") for span in spans):
         raise ValueError("Every overlapping gold span must contain label_type")
     raw_labels = sorted({str(span.get("label_type", "")) for span in spans if span.get("label_type")})
@@ -160,6 +229,18 @@ def project_gold_label(spans: list[dict]) -> tuple[str, list[str], bool, list[st
         review_reasons.append("subtle_gold_span")
     if len(mapped_labels) > 1:
         review_reasons.append("mixed_gold_types")
+    if len(spans) > 1:
+        review_reasons.append("multiple_gold_spans")
+
+    for detail in overlap_details or []:
+        if detail["claim_overlap_ratio"] < low_claim_overlap_ratio:
+            review_reasons.append("low_claim_overlap")
+        if detail["span_coverage_ratio"] < low_span_coverage_ratio:
+            review_reasons.append("span_split_across_claims")
+        touches_boundary = detail["touches_claim_start"] or detail["touches_claim_end"]
+        if touches_boundary and detail["overlap_chars"] <= boundary_overlap_chars:
+            review_reasons.append("boundary_only_overlap")
+    review_reasons = list(dict.fromkeys(review_reasons))
     return gold_label, raw_labels, bool(review_reasons), review_reasons
 
 
@@ -167,6 +248,9 @@ def response_to_pairs(
     sample: dict,
     long_claim_tokens: int = DEFAULT_LONG_CLAIM_TOKENS,
     compound_claim_tokens: int = DEFAULT_COMPOUND_CLAIM_TOKENS,
+    low_claim_overlap_ratio: float = DEFAULT_LOW_CLAIM_OVERLAP_RATIO,
+    low_span_coverage_ratio: float = DEFAULT_LOW_SPAN_COVERAGE_RATIO,
+    boundary_overlap_chars: int = DEFAULT_BOUNDARY_OVERLAP_CHARS,
 ) -> list[dict]:
     """Convert one response record into ordered document-claim pair records."""
     qid = str(sample.get("qid", "")).strip()
@@ -184,11 +268,22 @@ def response_to_pairs(
         raise ValueError(f"Response {qid} produced no sentence claims")
 
     gold_spans = get_gold_spans(sample)
+    validate_gold_spans(answer, gold_spans)
     pairs = []
     for claim_number, claim_info in enumerate(claims, start=1):
         claim_id = f"c{claim_number:02d}"
         matched_spans = overlapping_gold_spans(claim_info["start"], claim_info["end"], gold_spans)
-        gold_label, raw_labels, gold_review_flag, gold_review_reasons = project_gold_label(matched_spans)
+        overlap_details = describe_gold_overlaps(
+            claim_info["start"], claim_info["end"], matched_spans
+        )
+        gold_label, raw_labels, gold_review_flag, gold_review_reasons = project_gold_label(
+            matched_spans,
+            overlap_details=overlap_details,
+            low_claim_overlap_ratio=low_claim_overlap_ratio,
+            low_span_coverage_ratio=low_span_coverage_ratio,
+            boundary_overlap_chars=boundary_overlap_chars,
+        )
+        overlap_chars = _union_overlap_chars(overlap_details)
         review_reasons = list(dict.fromkeys(claim_info["review_reasons"] + gold_review_reasons))
         pairs.append({
             "schema_version": PAIR_SCHEMA_VERSION,
@@ -211,6 +306,12 @@ def response_to_pairs(
             "gold_label": gold_label,
             "gold_label_raw": raw_labels,
             "gold_spans": matched_spans,
+            "gold_projection_version": GOLD_PROJECTION_VERSION,
+            "gold_overlap_details": overlap_details,
+            "gold_overlap_char_count": overlap_chars,
+            "gold_claim_coverage_ratio": round(
+                overlap_chars / (claim_info["end"] - claim_info["start"]), 6
+            ),
             "review_flag": claim_info["review_flag"] or gold_review_flag,
             "review_reasons": review_reasons,
             "dataset": "RAGTruth",
@@ -229,6 +330,9 @@ def convert_file(
     output_path: Path,
     long_claim_tokens: int = DEFAULT_LONG_CLAIM_TOKENS,
     compound_claim_tokens: int = DEFAULT_COMPOUND_CLAIM_TOKENS,
+    low_claim_overlap_ratio: float = DEFAULT_LOW_CLAIM_OVERLAP_RATIO,
+    low_span_coverage_ratio: float = DEFAULT_LOW_SPAN_COVERAGE_RATIO,
+    boundary_overlap_chars: int = DEFAULT_BOUNDARY_OVERLAP_CHARS,
 ) -> dict:
     responses = 0
     pairs = []
@@ -242,6 +346,9 @@ def convert_file(
             sample,
             long_claim_tokens=long_claim_tokens,
             compound_claim_tokens=compound_claim_tokens,
+            low_claim_overlap_ratio=low_claim_overlap_ratio,
+            low_span_coverage_ratio=low_span_coverage_ratio,
+            boundary_overlap_chars=boundary_overlap_chars,
         ):
             if pair["pair_id"] in pair_ids:
                 raise ValueError(f"Duplicate pair_id generated: {pair['pair_id']}")
@@ -264,6 +371,10 @@ def convert_file(
         "evidence_policy": EVIDENCE_POLICY,
         "long_claim_tokens": long_claim_tokens,
         "compound_claim_tokens": compound_claim_tokens,
+        "gold_projection_version": GOLD_PROJECTION_VERSION,
+        "low_claim_overlap_ratio": low_claim_overlap_ratio,
+        "low_span_coverage_ratio": low_span_coverage_ratio,
+        "boundary_overlap_chars": boundary_overlap_chars,
         "schema_version": PAIR_SCHEMA_VERSION,
         "output": str(output_path),
     }
@@ -285,6 +396,18 @@ def main() -> None:
         default=DEFAULT_COMPOUND_CLAIM_TOKENS,
         help="Check conjunctions for possible compound claims at or above this count (default: 40)",
     )
+    parser.add_argument(
+        "--low-claim-overlap-ratio", type=float, default=DEFAULT_LOW_CLAIM_OVERLAP_RATIO,
+        help="Review a projected label when a span covers less than this claim fraction (default: 0.20)",
+    )
+    parser.add_argument(
+        "--low-span-coverage-ratio", type=float, default=DEFAULT_LOW_SPAN_COVERAGE_RATIO,
+        help="Review a gold span split across claims below this covered fraction (default: 0.50)",
+    )
+    parser.add_argument(
+        "--boundary-overlap-chars", type=int, default=DEFAULT_BOUNDARY_OVERLAP_CHARS,
+        help="Review boundary overlaps no longer than this many characters (default: 3)",
+    )
     args = parser.parse_args()
     for name, value in (
         ("long-claim-tokens", args.long_claim_tokens),
@@ -292,11 +415,22 @@ def main() -> None:
     ):
         if value < 1:
             parser.error(f"--{name} must be at least 1")
+    for name, value in (
+        ("low-claim-overlap-ratio", args.low_claim_overlap_ratio),
+        ("low-span-coverage-ratio", args.low_span_coverage_ratio),
+    ):
+        if not 0 <= value <= 1:
+            parser.error(f"--{name} must be between 0 and 1")
+    if args.boundary_overlap_chars < 0:
+        parser.error("--boundary-overlap-chars must be at least 0")
     summary = convert_file(
         Path(args.input),
         Path(args.output),
         long_claim_tokens=args.long_claim_tokens,
         compound_claim_tokens=args.compound_claim_tokens,
+        low_claim_overlap_ratio=args.low_claim_overlap_ratio,
+        low_span_coverage_ratio=args.low_span_coverage_ratio,
+        boundary_overlap_chars=args.boundary_overlap_chars,
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 

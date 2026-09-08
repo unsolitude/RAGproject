@@ -21,7 +21,7 @@ Schema 版本：`ragtruth_response_v1`
 
 ## 3. Document-claim pair
 
-Schema 版本：`ragtruth_doc_claim_pair_v2`
+Schema 版本：`ragtruth_doc_claim_pair_v3`
 
 每行代表一个可独立核验的 pair。关键字段如下：
 
@@ -39,9 +39,14 @@ Schema 版本：`ragtruth_doc_claim_pair_v2`
 | `gold_label` | `supported`、`conflict` 或 `unsupported` |
 | `gold_label_raw` | 与 claim 重叠的原始 RAGTruth 标签类型 |
 | `gold_spans` | 与 claim 重叠的原始标注对象 |
+| `gold_projection_version` | span 到 claim 的标签投影规则版本 |
+| `gold_overlap_details` | 每个命中 span 的交集位置、字符数和双向覆盖率 |
+| `gold_overlap_char_count` | 合并重叠区间后被 gold span 覆盖的 claim 字符数 |
+| `gold_claim_coverage_ratio` | gold 覆盖字符数占 claim 长度的比例 |
 | `review_flag/review_reasons` | 需要后续人工复核的标记及原因 |
 
 pair 输入只保存 `gold_label`，不预填模型预测。
+具体标签优先级、低重叠阈值和复核原因见 `docs/label_mapping.md`。
 
 ## 4. Baseline 结果
 
@@ -55,7 +60,31 @@ Schema 版本：`ragtruth_baseline_result_v2`
 
 新结果不再重复写入旧 `label` 字段。评价器只在读取历史结果时回退到 `label`。
 
-## 5. 标签命名
+## 5. MiniCheck pair 结果
+
+Schema 版本：`ragtruth_minicheck_pair_result_v1`
+
+pair 模式每行对应一个输入 pair，并保持输入顺序。主要字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `run_id` | 本次运行的唯一标识 |
+| `pair_id/qid/claim_id` | 与 pair 输入一致的追踪字段 |
+| `document/claim` | MiniCheck 实际接收的文本 |
+| `gold_label/gold_label_raw` | 输入中的人工标签及原始 RAGTruth 类型 |
+| `pred_label` | `supported` 或 `unsupported` |
+| `prediction` | MiniCheck 二值输出，支持为 1，否则为 0 |
+| `score` | `[0,1]` 范围的支持概率 |
+| `minicheck_scores` | 阈值、选中 chunk 和各 chunk 支持概率 |
+| `model_name/model_path/threshold` | 模型和判定配置 |
+| `document_len/claim_len` | 字符长度，单位见 `length_unit` |
+| `latency_ms` | 当前 batch 墙钟耗时除以实际 batch size |
+| `latency_measurement` | 固定为 `batch_wall_clock_amortized`，避免误解为逐条独立推理耗时 |
+| `batch_id/batch_size` | 该结果对应的批次信息 |
+
+同名 `.manifest.json` 保存精确运行总耗时、每个 batch 的总耗时、模型配置、输入输出数量和标签分布。逐 pair 行不会把整个 batch 耗时重复记作单条耗时。
+
+## 6. 标签命名
 
 项目统一使用小写标签：
 
