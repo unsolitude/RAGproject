@@ -2,7 +2,7 @@
 #SBATCH --job-name=minicheck-50
 #SBATCH -p normal
 #SBATCH -G 1
-#SBATCH -c=1
+#SBATCH -c 1
 #SBATCH --mem=1M
 #SBATCH --time=01:00:00
 #SBATCH --output=outputs/logs/minicheck-50-%j.log

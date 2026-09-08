@@ -2,7 +2,7 @@
 #SBATCH --job-name=minicheck-smoke
 #SBATCH -p normal
 #SBATCH -G 1
-#SBATCH -c=1
+#SBATCH -c 1
 #SBATCH --mem=1M
 #SBATCH --time=00:30:00
 #SBATCH --output=outputs/logs/minicheck-smoke-%j.log
