@@ -35,7 +35,7 @@ class MiniCheckJudgeTests(unittest.TestCase):
             ["Paris is France's capital", "Paris is Germany's capital"],
             self.evidence,
         )
-        self.assertEqual([item["label"] for item in verdicts], ["supported", "unsupported"])
+        self.assertEqual([item["pred_label"] for item in verdicts], ["supported", "unsupported"])
         self.assertEqual(verdicts[0]["minicheck_scores"]["chunk_probabilities"], [0.91])
 
     def test_baseline_records_minicheck_output(self):

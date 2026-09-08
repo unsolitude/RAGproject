@@ -81,7 +81,7 @@ class NLIJudge:
     def classify(self, claim: str, evidence: list[dict]) -> dict:
         if not evidence:
             return {
-                "label": "unsupported",
+                "pred_label": "unsupported",
                 "evidence": None,
                 "explanation": "没有可用证据。",
                 "nli_scores": None,
@@ -111,7 +111,7 @@ class NLIJudge:
             explanation = "没有证据达到蕴含或矛盾阈值，判为证据不足。"
 
         return {
-            "label": label,
+            "pred_label": label,
             "evidence": evidence[selected_index],
             "explanation": explanation,
             "nli_scores": {

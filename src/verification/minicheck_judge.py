@@ -153,7 +153,7 @@ class MiniCheckJudge:
             return []
         if not evidence:
             return [{
-                "label": "unsupported",
+                "pred_label": "unsupported",
                 "evidence": None,
                 "explanation": "没有可用证据。",
                 "minicheck_scores": None,
@@ -175,7 +175,7 @@ class MiniCheckJudge:
             selected_text = chunk_texts[min(best_index, len(chunk_texts) - 1)] if chunk_texts else document
             supported = score >= self.threshold
             verdicts.append({
-                "label": "supported" if supported else "unsupported",
+                "pred_label": "supported" if supported else "unsupported",
                 "evidence": {"id": f"minicheck_chunk_{best_index + 1}", "text": selected_text},
                 "explanation": (
                     "MiniCheck 支持概率达到阈值。" if supported else "MiniCheck 支持概率未达到阈值。"

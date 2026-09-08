@@ -8,6 +8,8 @@ import random
 import re
 from pathlib import Path
 
+from data_schema import RESPONSE_SCHEMA_VERSION
+
 
 PASSAGE_RE = re.compile(r"(?:^|\n\s*)passage\s+(\d+)\s*:\s*", re.IGNORECASE)
 
@@ -43,6 +45,7 @@ def convert(source: dict, response: dict) -> dict:
         contexts = [{"id": "source_context", "text": text}]
 
     return {
+        "schema_version": RESPONSE_SCHEMA_VERSION,
         "qid": response["id"],
         "source_id": response["source_id"],
         "task_type": source["task_type"],

@@ -10,6 +10,9 @@ from collections import Counter
 from pathlib import Path
 from typing import Iterable
 
+from data_schema import RESULT_SCHEMA_VERSION, get_contexts, get_gold_spans, get_response_text
+from split_claims import split_claims, split_claims_with_offsets
+
 
 STOPWORDS = set("的 了 和 是 在 于 与 及 或 将 把 被 对 从 一个 一种 什么 哪些 是否 怎么样 如何".split())
 ENGLISH_STOPWORDS = set("a an and are as at be been but by for from has have if in into is it its of on or that the their them there these this to was were will with".split())
@@ -22,22 +25,6 @@ def tokenize(text: str) -> list[str]:
     chinese = re.findall(r"[\u4e00-\u9fff]", text)
     latin = re.findall(r"[A-Za-z0-9]+", text.lower())
     return [token for token in chinese + latin if token not in STOPWORDS and token not in ENGLISH_STOPWORDS]
-
-
-def split_claims(answer: str) -> list[str]:
-    return [item["claim"] for item in split_claims_with_offsets(answer)]
-
-
-def split_claims_with_offsets(answer: str) -> list[dict]:
-    claims = []
-    for match in re.finditer(r"[^。！？；;.!?]+(?:[。！？；;.!?]+|$)", answer):
-        raw = match.group()
-        leading = len(raw) - len(raw.lstrip())
-        text = raw.strip().rstrip("。！？；;.!?").strip()
-        if text:
-            start = match.start() + leading
-            claims.append({"claim": text, "start": start, "end": start + len(text)})
-    return claims
 
 
 def bm25_rank(query: str, contexts: list[dict]) -> list[dict]:
@@ -150,13 +137,16 @@ def run_sample(
     nli_judge=None,
     minicheck_judge=None,
 ) -> dict:
-    verification_mode = answer_override is not None or "answer" in sample
+    contexts = get_contexts(sample)
+    response_text = get_response_text(sample, required=False)
+    gold_spans = get_gold_spans(sample)
+    verification_mode = answer_override is not None or response_text is not None
     if verification_mode:
-        evidence = sample["contexts"]
+        evidence = contexts
     else:
-        ranked = bm25_rank(sample["query"], sample["contexts"])
+        ranked = bm25_rank(sample["query"], contexts)
         evidence = evidence_filter(sample["query"], ranked, top_k)
-    answer = answer_override or sample.get("answer") or generate_answer(sample["query"], evidence)
+    answer = answer_override or response_text or generate_answer(sample["query"], evidence)
     claim_infos = split_claims_with_offsets(answer)
     minicheck_verdicts = {}
     if judge_name == "minicheck":
@@ -176,34 +166,40 @@ def run_sample(
         minicheck_scores = None
         if judge_name == "nli" and not is_abstention(claim_info["claim"]):
             verdict = nli_judge.classify(claim_info["claim"], evidence)
-            label = verdict["label"]
+            label = verdict["pred_label"]
             source = verdict["evidence"]
             explanation = verdict["explanation"]
             nli_scores = verdict["nli_scores"]
         elif judge_name == "minicheck" and claim_index in minicheck_verdicts:
             verdict = minicheck_verdicts[claim_index]
-            label = verdict["label"]
+            label = verdict["pred_label"]
             source = verdict["evidence"]
             explanation = verdict["explanation"]
             minicheck_scores = verdict["minicheck_scores"]
         else:
             label, source, explanation = classify_claim(claim_info["claim"], evidence)
-        claims.append({**claim_info, "label": label, "evidence_id": source["id"] if source else None,
+        claims.append({**claim_info, "pred_label": label,
+                       "evidence_id": source["id"] if source else None,
                        "evidence_text": source["text"] if source else None, "explanation": explanation,
                        "nli_scores": nli_scores, "minicheck_scores": minicheck_scores})
     gold = set(sample.get("gold_evidence_ids", []))
     retrieved = {item["id"] for item in evidence}
-    faithfulness = mean(item["label"] == "supported" for item in claims)
-    hallucination_rate = mean(item["label"] != "supported" for item in claims)
-    predicted_spans = [{"start": item["start"], "end": item["end"], "text": item["claim"], "label": item["label"]}
-                       for item in claims if item["label"] != "supported"]
+    faithfulness = mean(item["pred_label"] == "supported" for item in claims)
+    hallucination_rate = mean(item["pred_label"] != "supported" for item in claims)
+    predicted_spans = [{"start": item["start"], "end": item["end"], "text": item["claim"],
+                        "pred_label": item["pred_label"]}
+                       for item in claims if item["pred_label"] != "supported"]
     predicted_hallucinated = bool(predicted_spans)
     metrics = {"answer_f1": round(char_f1(answer, sample.get("gold_answer", "")), 4) if sample.get("gold_answer") else None,
                         "evidence_recall": round(len(gold & retrieved) / len(gold), 4) if gold else None,
                         "faithfulness": round(faithfulness, 4), "hallucination_rate": round(hallucination_rate, 4)}
-    if "gold_hallucinated" in sample:
-        metrics["response_correct"] = predicted_hallucinated == sample["gold_hallucinated"]
-        metrics.update(span_scores(predicted_spans, sample.get("gold_spans", [])))
+    has_gold_annotation = any(key in sample for key in ("gold_hallucinated", "gold_spans", "span_label"))
+    gold_hallucinated = sample.get("gold_hallucinated")
+    if gold_hallucinated is None and has_gold_annotation:
+        gold_hallucinated = bool(gold_spans)
+    if has_gold_annotation:
+        metrics["response_correct"] = predicted_hallucinated == gold_hallucinated
+        metrics.update(span_scores(predicted_spans, gold_spans))
     judge_config = {"name": judge_name}
     if nli_judge is not None:
         judge_config.update({
@@ -224,14 +220,15 @@ def run_sample(
             "tensor_parallel_size": minicheck_judge.tensor_parallel_size,
             "enable_prefix_caching": minicheck_judge.enable_prefix_caching,
         })
-    return {"qid": sample["qid"], "query": sample["query"], "answer": answer,
+    return {"schema_version": RESULT_SCHEMA_VERSION,
+            "qid": sample["qid"], "query": sample["query"], "answer": answer,
             "generator_model": sample.get("generator_model"),
             "task_type": sample.get("task_type"), "split": sample.get("split"),
             "judge": judge_config,
             "mode": "verification" if verification_mode else "generation",
             "provided_contexts": evidence, "claims": claims,
             "predicted_hallucinated": predicted_hallucinated, "predicted_spans": predicted_spans,
-            "gold_hallucinated": sample.get("gold_hallucinated"), "gold_spans": sample.get("gold_spans"),
+            "gold_hallucinated": gold_hallucinated, "gold_spans": gold_spans,
             "metrics": metrics}
 
 

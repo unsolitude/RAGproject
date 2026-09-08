@@ -47,8 +47,11 @@ RAGproject/
 │       ├── raw/                  # RAGTruth 官方原始文件（不提交）
 │       └── processed/            # 转换后的统一 JSONL 数据
 ├── outputs/                      # 逐样本预测与指标汇总（不提交）
+├── docs/
+│   └── data_schema.md            # response、pair 与结果字段规范
 ├── src/
 │   ├── prepare_ragtruth.py       # 数据关联、筛选和随机抽样
+│   ├── split_claims.py           # 回答级样本展开为 document-claim pairs
 │   ├── run_baseline.py           # 规则化证据支持性基线
 │   ├── evaluate_results.py       # 批量指标与分布统计
 │   └── verification/
@@ -113,6 +116,10 @@ python src/prepare_ragtruth.py `
   --output data/ragtruth/processed/qa_one.jsonl `
   --response-id 11858
 
+python src/split_claims.py `
+  --input data/ragtruth/processed/qa_one.jsonl `
+  --output data/ragtruth/processed/doc_claim_pairs.jsonl
+
 python src/run_baseline.py `
   --input data/ragtruth/processed/qa_one.jsonl `
   --output outputs/ragtruth_one_result.jsonl
@@ -122,6 +129,8 @@ python src/evaluate_results.py `
 ```
 
 该样本包含一段人工标注的 `Evident Baseless Info`。当前基线能够在回答级识别该样本含有幻觉，并定位相应句子。
+
+`split_claims.py` 生成的文件以 claim 为单位，每行保存稳定的 `pair_id`、原回答字符位置、拼接后的 document、证据编号和最小 claim 级金标签。`run_baseline.py` 与该脚本复用同一套 `sentence_v2` 切分逻辑，避免预处理和推理阶段产生不同 claim。该版本支持普通句子、换行、编号列表和项目符号；超过 80 个轻量 token 的长 claim 会进入复核，至少 40 token 且包含并列连接词的 claim 会标为疑似多事实。两个阈值可分别通过 `--long-claim-tokens` 和 `--compound-claim-tokens` 调整。
 
 ### 2. 复现 200 条 QA 测试子集
 
@@ -166,6 +175,8 @@ python src/prepare_ragtruth.py `
 在该开发集上确定阈值和方法后，再对固定测试子集或完整 test 划分进行一次最终评价。
 
 ## 统一数据格式
+
+完整字段约定见 [`docs/data_schema.md`](docs/data_schema.md)。回答级文件规范使用 `contexts / answer / gold_spans`；读取时兼容课件中的 `context / response / span_label`。若两组字段同时存在但内容不同，程序会报错。
 
 转换后的文件为 JSONL，每行是一条模型回答：
 
@@ -332,6 +343,7 @@ python -B src/evaluate_results.py \
 
 ```powershell
 python src/prepare_ragtruth.py --help
+python src/split_claims.py --help
 python src/run_baseline.py --help
 python src/evaluate_results.py --help
 ```

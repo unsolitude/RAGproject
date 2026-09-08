@@ -1,7 +1,6 @@
 outputs/*.jsonl
 outputs/*.json
 outputs/logs/
-data/ragtruth/raw/*.jsonl
 models/
 .venv/
 __pycache__/

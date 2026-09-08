@@ -48,7 +48,10 @@ def aggregate(rows: list[dict]) -> dict:
         gold_chars += len(gold_set)
         overlapping_chars += len(predicted_set & gold_set)
         gold_error_types.update(span["label_type"] for span in row.get("gold_spans", []))
-        predicted_claim_labels.update(claim["label"] for claim in row.get("claims", []))
+        predicted_claim_labels.update(
+            claim.get("pred_label", claim.get("label", "unknown"))
+            for claim in row.get("claims", [])
+        )
 
         model = row.get("generator_model", "unknown")
         group = by_model[model]
