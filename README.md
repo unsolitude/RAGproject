@@ -136,7 +136,7 @@ python src/evaluate_results.py `
 
 该样本包含一段人工标注的 `Evident Baseless Info`。当前基线能够在回答级识别该样本含有幻觉，并定位相应句子。
 
-`split_claims.py` 生成的文件以 claim 为单位，每行保存稳定的 `pair_id`、原回答字符位置、拼接后的 document、证据编号和 claim 级金标签。`run_baseline.py` 与该脚本复用同一套 `sentence_v2` 切分逻辑，避免预处理和推理阶段产生不同 claim。该版本支持普通句子、换行、编号列表和项目符号；超过 80 个轻量 token 的长 claim 会进入复核，至少 40 token 且包含并列连接词的 claim 会标为疑似多事实。RAGTruth span 投影还会保存双向覆盖率，并把 Subtle、多 span、混合类型、低覆盖和边界重叠送入复核。切分阈值与投影规则详见 [`docs/label_mapping.md`](docs/label_mapping.md)。
+`split_claims.py` 生成的文件以 claim 为单位，每行保存稳定的 `pair_id`、原回答字符位置、拼接后的 document、证据编号和 claim 级金标签。`run_baseline.py` 与该脚本复用同一套 `sentence_v3` 切分逻辑，避免预处理和推理阶段产生不同 claim。该版本支持普通句子、换行、编号列表和项目符号，并避免在小数、金额、常见缩写及正文中的 `Passage 2.` 等位置产生错误切分；超过 80 个轻量 token 的长 claim 会进入复核，至少 40 token 且包含并列连接词的 claim 会标为疑似多事实。RAGTruth span 投影还会保存双向覆盖率，并把 Subtle、多 span、混合类型、低覆盖和边界重叠送入复核。切分阈值与投影规则详见 [`docs/label_mapping.md`](docs/label_mapping.md)。
 
 ### 2. 复现 200 条 QA 测试子集
 
@@ -362,7 +362,7 @@ python -B src/evaluate_results.py \
 
 ### MiniCheck pair 模式（第二节 3.5）
 
-50 条固定 train response 已转换为 `data/ragtruth/processed/doc_claim_pairs_50.jsonl`。该文件包含 438 个 sentence-level pair；“50 条”指 50 个原回答，而不是只取前 50 个 claim。
+50 条固定 train response 已转换为 `data/ragtruth/processed/doc_claim_pairs_50.jsonl`。使用 `sentence_v3` 后，该文件包含 414 个 sentence-level pair；“50 条”指 50 个原回答，而不是只取前 50 个 claim。基于旧 `sentence_v2` 的 Job 38628 仅作为调试记录，不能用于正式指标。
 
 先只运行第一个 pair，检查平铺结果 schema：
 
@@ -372,7 +372,7 @@ mkdir -p outputs/logs
 sbatch --export=ALL,PAIR_LIMIT=1,OUTPUT_PATH=/home/kangzj/RAGproject/outputs/minicheck_pair_smoke.jsonl,MANIFEST_PATH=/home/kangzj/RAGproject/outputs/logs/minicheck-pair-smoke-manifest.json scripts/slurm/run_minicheck_50.slurm
 ```
 
-小测试成功后运行完整 438 个 pair：
+小测试成功后运行完整 414 个 pair：
 
 ```bash
 sbatch scripts/slurm/run_minicheck_50.slurm
@@ -386,7 +386,7 @@ outputs/logs/minicheck-50-<JOB_ID>-manifest.json
 outputs/logs/minicheck-50-<JOB_ID>.log
 ```
 
-每行保存 `pair_id`、`pred_label`、二值 `prediction`、支持概率 `score`、模型路径、文本字符长度和批次摊销延迟。manifest 保存精确总耗时与逐批耗时。任务结束前会自动运行无 GPU 的一致性检查；也可手动执行：
+每行保存 `pair_id`、`pred_label`、二值 `prediction`、支持概率 `score`、模型路径、文本字符长度和批次摊销延迟。manifest 保存精确总耗时、逐批耗时、输入 SHA-256 和 `split_rule_version`，防止误用旧 pair 结果。任务结束前会自动运行无 GPU 的一致性检查；也可手动执行：
 
 ```bash
 python src/validate_pair_results.py \

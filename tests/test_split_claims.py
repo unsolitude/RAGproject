@@ -34,6 +34,31 @@ class SplitClaimsTests(unittest.TestCase):
         for item in claims:
             self.assertEqual(answer[item["start"]:item["end"]], item["claim"])
 
+    def test_decimal_amounts_are_not_split(self):
+        answer = "A stamp costs $0.49. A postcard costs $0.35."
+        claims = split_claims_with_offsets(answer)
+        self.assertEqual(
+            [item["claim"] for item in claims],
+            ["A stamp costs $0.49", "A postcard costs $0.35"],
+        )
+
+    def test_passage_references_are_not_treated_as_numbered_lists(self):
+        answer = "Check the requirements in Passage 2.\nUse the address in Passage 3."
+        claims = split_claims_with_offsets(answer)
+        self.assertEqual(
+            [item["claim"] for item in claims],
+            ["Check the requirements in Passage 2", "Use the address in Passage 3"],
+        )
+        self.assertTrue(all(not item["split_features"] for item in claims))
+
+    def test_common_abbreviations_do_not_create_fragments(self):
+        answer = "Dr. Smith works in the U.S. office. The result is 3.14."
+        claims = split_claims_with_offsets(answer)
+        self.assertEqual(
+            [item["claim"] for item in claims],
+            ["Dr. Smith works in the U.S. office", "The result is 3.14"],
+        )
+
     def test_long_and_possible_compound_claims_are_flagged(self):
         answer = (
             "The system supports local inference for research experiments and it also records every evidence "

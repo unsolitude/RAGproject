@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from collections import Counter
 from pathlib import Path
 
 from data_schema import PAIR_RESULT_SCHEMA_VERSION
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def read_jsonl(path: Path) -> list[dict]:
@@ -27,6 +36,8 @@ def validate_pair_results(input_path: Path, result_path: Path, manifest_path: Pa
     input_rows = read_jsonl(input_path)
     results = read_jsonl(result_path)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("input_sha256") != sha256_file(input_path):
+        raise ValueError("Manifest input_sha256 does not match the pair input file")
     if not results:
         raise ValueError("Pair result file is empty")
     if len(results) > len(input_rows):
@@ -45,6 +56,10 @@ def validate_pair_results(input_path: Path, result_path: Path, manifest_path: Pa
     for index, row in enumerate(results, start=1):
         if row.get("schema_version") != PAIR_RESULT_SCHEMA_VERSION:
             raise ValueError(f"Result row {index} has an unsupported schema version")
+        if row.get("pair_schema_version") != input_rows[index - 1].get("schema_version"):
+            raise ValueError(f"Result row {index} has a mismatched pair schema version")
+        if row.get("split_rule_version") != input_rows[index - 1].get("split_rule_version"):
+            raise ValueError(f"Result row {index} has a mismatched split rule version")
         if row.get("pred_label") not in {"supported", "unsupported"}:
             raise ValueError(f"Result row {index} has an invalid pred_label")
         if row.get("prediction") != int(row["pred_label"] == "supported"):

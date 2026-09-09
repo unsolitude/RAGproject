@@ -82,7 +82,7 @@ pair 模式每行对应一个输入 pair，并保持输入顺序。主要字段�
 | `latency_measurement` | 固定为 `batch_wall_clock_amortized`，避免误解为逐条独立推理耗时 |
 | `batch_id/batch_size` | 该结果对应的批次信息 |
 
-同名 `.manifest.json` 保存精确运行总耗时、每个 batch 的总耗时、模型配置、输入输出数量和标签分布。逐 pair 行不会把整个 batch 耗时重复记作单条耗时。
+同名 `.manifest.json` 保存精确运行总耗时、每个 batch 的总耗时、模型配置、输入输出数量、标签分布、输入 SHA-256 和切分版本。验证器会拒绝与当前 pair 文件哈希或切分版本不一致的旧结果。逐 pair 行不会把整个 batch 耗时重复记作单条耗时。
 
 ## 6. 标签命名
 

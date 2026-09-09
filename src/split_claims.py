@@ -12,7 +12,7 @@ from typing import Iterable
 from data_schema import PAIR_SCHEMA_VERSION, RESPONSE_SCHEMA_VERSION, get_contexts, get_gold_spans, get_response_text
 
 
-SPLIT_RULE_VERSION = "sentence_v2"
+SPLIT_RULE_VERSION = "sentence_v3"
 EVIDENCE_POLICY = "all_contexts_concat_v1"
 DEFAULT_LONG_CLAIM_TOKENS = 80
 DEFAULT_COMPOUND_CLAIM_TOKENS = 40
@@ -23,6 +23,10 @@ GOLD_PROJECTION_VERSION = "ragtruth_span_overlap_v1"
 CONFLICT_LABELS = {"Evident Conflict", "Subtle Conflict"}
 UNSUPPORTED_LABELS = {"Evident Baseless Info", "Subtle Baseless Info"}
 KNOWN_GOLD_LABELS = CONFLICT_LABELS | UNSUPPORTED_LABELS
+NON_TERMINAL_ABBREVIATIONS = {
+    "dr.", "mr.", "mrs.", "ms.", "prof.", "sr.", "jr.",
+    "e.g.", "i.e.", "vs.", "no.", "fig.", "approx.",
+}
 
 
 def read_jsonl(path: Path) -> Iterable[dict]:
@@ -48,7 +52,7 @@ def _trim_claim_segment(answer: str, start: int, end: int) -> tuple[int, int, li
         end -= 1
 
     features = []
-    marker = re.match(r"(?:\d{1,2}[.)、]|[-*•])\s+", answer[start:end])
+    marker = re.match(r"(?:\d{1,2}[.)）、]|[-*•])\s+", answer[start:end])
     if marker:
         marker_text = marker.group().lstrip()
         features.append("numbered_list_item" if marker_text[0].isdigit() else "bullet_list_item")
@@ -75,10 +79,27 @@ def split_claims_with_offsets(
         raise ValueError("compound_claim_tokens must be at least 1")
 
     boundaries = {0, len(answer)}
-    list_markers = list(re.finditer(r"(?<!\S)(?:\d{1,2}[.)、]|[-*•])\s+", answer))
-    for match in re.finditer(r"[。！？；;.!?]+", answer):
+    line_markers = list(re.finditer(r"(?m)^[ \t]*(?:\d{1,2}[.)）、]|[-*•])\s+", answer))
+    inline_markers = list(re.finditer(r"(?<!\S)\d{1,2}[)）]\s+", answer))
+    list_markers = sorted(
+        {match.span(): match for match in line_markers + inline_markers}.values(),
+        key=lambda match: match.start(),
+    )
+    for match in re.finditer(r"[。！？；;]+|[.!?]+", answer):
         if any(marker.start() <= match.start() and match.end() <= marker.end() for marker in list_markers):
             continue
+        punctuation = match.group()
+        if punctuation == ".":
+            index = match.start()
+            if 0 < index < len(answer) - 1 and answer[index - 1].isdigit() and answer[index + 1].isdigit():
+                continue
+            token_match = re.search(r"[A-Za-z.]+$", answer[:match.end()])
+            if token_match:
+                token = token_match.group()
+                if token.lower() in NON_TERMINAL_ABBREVIATIONS or re.fullmatch(r"(?:[A-Za-z]\.){2,}", token):
+                    continue
+            if match.end() < len(answer) and not answer[match.end()].isspace():
+                continue
         boundaries.add(match.end())
     for match in re.finditer(r"\r?\n+", answer):
         boundaries.update((match.start(), match.end()))

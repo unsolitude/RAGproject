@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import re
@@ -133,6 +134,14 @@ def make_run_id(judge_name: str) -> str:
     return f"{judge_name}-{timestamp}-{uuid.uuid4().hex[:8]}"
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def validate_pair_record(record: dict, row_number: int) -> None:
     required = ("pair_id", "qid", "claim_id", "document", "claim", "gold_label")
     missing = [field for field in required if field not in record]
@@ -188,6 +197,9 @@ def run_minicheck_pairs(
             support_probability = scores["support_probability"]
             results.append({
                 "schema_version": PAIR_RESULT_SCHEMA_VERSION,
+                "pair_schema_version": pair.get("schema_version"),
+                "split_rule_version": pair.get("split_rule_version"),
+                "gold_projection_version": pair.get("gold_projection_version"),
                 "run_id": run_id,
                 "pair_id": pair["pair_id"],
                 "qid": pair["qid"],
@@ -243,6 +255,9 @@ def write_pair_manifest(
         "data_format": "pair",
         "judge": "minicheck",
         "input_file": str(input_path),
+        "input_sha256": sha256_file(input_path),
+        "input_schema_versions": sorted({str(row.get("schema_version")) for row in pairs}),
+        "split_rule_versions": sorted({str(row.get("split_rule_version")) for row in pairs}),
         "output_file": str(output_path),
         "input_pairs": len(pairs),
         "output_pairs": len(results),
