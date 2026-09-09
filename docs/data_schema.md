@@ -82,9 +82,27 @@ pair 模式每行对应一个输入 pair，并保持输入顺序。主要字段�
 | `latency_measurement` | 固定为 `batch_wall_clock_amortized`，避免误解为逐条独立推理耗时 |
 | `batch_id/batch_size` | 该结果对应的批次信息 |
 
-同名 `.manifest.json` 保存精确运行总耗时、每个 batch 的总耗时、模型配置、输入输出数量、标签分布、输入 SHA-256 和切分版本。验证器会拒绝与当前 pair 文件哈希或切分版本不一致的旧结果。逐 pair 行不会把整个 batch 耗时重复记作单条耗时。
+同名 `.manifest.json` 保存精确运行总耗时、每个 batch 的总耗时、模型配置、输入输出数量、标签分布、输入 SHA-256 和切分版本。SHA-256 计算前统一换行为 LF，确保 Windows 与 Linux 得到相同值。验证器会拒绝与当前 pair 文件哈希或切分版本不一致的旧结果。逐 pair 行不会把整个 batch 耗时重复记作单条耗时。
 
-## 6. 标签命名
+## 6. NLI pair 结果
+
+Schema 版本：`ragtruth_nli_pair_result_v1`
+
+NLI pair 模式与 MiniCheck 使用相同的 `document`、`claim` 和输入顺序，每行额外保存：
+
+| 字段 | 说明 |
+| --- | --- |
+| `pred_label` | 项目三分类：`supported`、`conflict` 或 `unsupported` |
+| `nli_scores` | 原生 `entailment`、`contradiction`、`neutral` 三类概率 |
+| `top_label/top_score` | 三类概率中的最高类别及其概率 |
+| `model_name/model_revision` | 固定的 Hugging Face 模型版本 |
+| `entailment_threshold/contradiction_threshold` | 从 NLI 类别映射到项目标签的阈值 |
+| `review_flag/review_reasons` | 继承数据复核标记；最高概率低于复核阈值时追加 `low_nli_confidence` |
+| `latency_ms/batch_id/batch_size` | 批次摊销耗时及批次信息 |
+
+NLI manifest 还保存设备、GPU 名称、PyTorch 峰值显存、模型 revision、最大输入长度、三类阈值、低置信度阈值、逐批耗时和总耗时。峰值显存为当前推理进程的 `torch.cuda.max_memory_allocated`，不是整张显卡或其他进程的占用。
+
+## 7. 标签命名
 
 项目统一使用小写标签：
 

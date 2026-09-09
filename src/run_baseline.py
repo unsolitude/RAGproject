@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Iterable
 
 from data_schema import (
+    NLI_PAIR_RESULT_SCHEMA_VERSION,
     PAIR_RESULT_SCHEMA_VERSION,
     RESULT_SCHEMA_VERSION,
     get_contexts,
@@ -135,11 +136,8 @@ def make_run_id(judge_name: str) -> str:
 
 
 def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    content = path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return hashlib.sha256(content).hexdigest()
 
 
 def validate_pair_record(record: dict, row_number: int) -> None:
@@ -235,6 +233,109 @@ def run_minicheck_pairs(
     return results, batch_timings
 
 
+def run_nli_pairs(
+    pairs: list[dict],
+    nli_judge,
+    batch_size: int,
+    run_id: str,
+    review_threshold: float,
+) -> tuple[list[dict], list[dict]]:
+    """Run native three-class NLI over aligned document-claim pairs."""
+    if batch_size < 1:
+        raise ValueError("batch_size must be at least 1")
+    pair_ids = set()
+    for row_number, pair in enumerate(pairs, start=1):
+        validate_pair_record(pair, row_number)
+        if pair["pair_id"] in pair_ids:
+            raise ValueError(f"Duplicate pair_id in input: {pair['pair_id']}")
+        pair_ids.add(pair["pair_id"])
+
+    results = []
+    batch_timings = []
+    total_batches = math.ceil(len(pairs) / batch_size) if pairs else 0
+    for batch_number, offset in enumerate(range(0, len(pairs), batch_size), start=1):
+        batch = pairs[offset:offset + batch_size]
+        started = time.perf_counter()
+        verdicts = nli_judge.classify_documents(
+            [pair["claim"] for pair in batch],
+            [pair["document"] for pair in batch],
+        )
+        batch_latency_ms = (time.perf_counter() - started) * 1000
+        if len(verdicts) != len(batch):
+            raise RuntimeError("NLI returned a different number of results than pair inputs")
+        amortized_latency_ms = batch_latency_ms / len(batch)
+        batch_id = f"b{batch_number:05d}"
+        batch_timings.append({
+            "batch_id": batch_id,
+            "pair_count": len(batch),
+            "batch_latency_ms": round(batch_latency_ms, 3),
+            "amortized_pair_latency_ms": round(amortized_latency_ms, 3),
+        })
+
+        for pair, verdict in zip(batch, verdicts):
+            low_confidence = verdict["top_score"] < review_threshold
+            review_reasons = list(pair.get("review_reasons", []))
+            if low_confidence and "low_nli_confidence" not in review_reasons:
+                review_reasons.append("low_nli_confidence")
+            results.append({
+                "schema_version": NLI_PAIR_RESULT_SCHEMA_VERSION,
+                "pair_schema_version": pair.get("schema_version"),
+                "split_rule_version": pair.get("split_rule_version"),
+                "gold_projection_version": pair.get("gold_projection_version"),
+                "run_id": run_id,
+                "pair_id": pair["pair_id"],
+                "qid": pair["qid"],
+                "claim_id": pair["claim_id"],
+                "document": pair["document"],
+                "document_ids": pair.get("document_ids", []),
+                "claim": pair["claim"],
+                "gold_label": pair["gold_label"],
+                "gold_label_raw": pair.get("gold_label_raw", []),
+                "pred_label": verdict["pred_label"],
+                "top_label": verdict["top_label"],
+                "top_score": verdict["top_score"],
+                "score": verdict["top_score"],
+                "nli_scores": verdict["nli_scores"],
+                "model_name": nli_judge.model_name,
+                "model_revision": nli_judge.revision,
+                "entailment_threshold": nli_judge.entailment_threshold,
+                "contradiction_threshold": nli_judge.contradiction_threshold,
+                "document_len": len(pair["document"]),
+                "claim_len": len(pair["claim"]),
+                "length_unit": "characters",
+                "latency_ms": round(amortized_latency_ms, 3),
+                "latency_measurement": "batch_wall_clock_amortized",
+                "batch_id": batch_id,
+                "batch_size": len(batch),
+                "review_flag": bool(pair.get("review_flag", False) or low_confidence),
+                "review_reasons": review_reasons,
+                "source": pair.get("source"),
+                "task_type": pair.get("task_type"),
+                "split": pair.get("split"),
+                "generator_model": pair.get("generator_model"),
+            })
+        print(f"NLI pair progress: {len(results)}/{len(pairs)} batches={batch_number}/{total_batches}", flush=True)
+    return results, batch_timings
+
+
+def gpu_runtime_stats(device: str, reset: bool = False) -> dict:
+    """Read peak PyTorch GPU allocation without making torch a Rule-mode dependency."""
+    try:
+        import torch
+        if not str(device).startswith("cuda") or not torch.cuda.is_available():
+            return {"peak_gpu_memory_mb": None, "gpu_name": None}
+        cuda_device = torch.device(device)
+        torch.cuda.synchronize(cuda_device)
+        if reset:
+            torch.cuda.reset_peak_memory_stats(cuda_device)
+        return {
+            "peak_gpu_memory_mb": round(torch.cuda.max_memory_allocated(cuda_device) / (1024 ** 2), 3),
+            "gpu_name": torch.cuda.get_device_name(cuda_device),
+        }
+    except (ImportError, RuntimeError, ValueError):
+        return {"peak_gpu_memory_mb": None, "gpu_name": None}
+
+
 def write_pair_manifest(
     path: Path,
     *,
@@ -270,6 +371,58 @@ def write_pair_manifest(
         "tensor_parallel_size": minicheck_judge.tensor_parallel_size,
         "enable_prefix_caching": minicheck_judge.enable_prefix_caching,
         "configured_batch_size": configured_batch_size,
+        "started_at_utc": started_at.isoformat(),
+        "finished_at_utc": datetime.now(timezone.utc).isoformat(),
+        "elapsed_seconds": round(elapsed_seconds, 3),
+        "latency_definition": "Per-pair latency is batch wall-clock time divided by actual batch size.",
+        "batches": batch_timings,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return manifest
+
+
+def write_nli_pair_manifest(
+    path: Path,
+    *,
+    run_id: str,
+    input_path: Path,
+    output_path: Path,
+    pairs: list[dict],
+    results: list[dict],
+    batch_timings: list[dict],
+    nli_judge,
+    configured_batch_size: int,
+    review_threshold: float,
+    started_at: datetime,
+    elapsed_seconds: float,
+    gpu_stats: dict,
+) -> dict:
+    labels = Counter(row["pred_label"] for row in results)
+    manifest = {
+        "run_id": run_id,
+        "data_format": "pair",
+        "judge": "nli",
+        "input_file": str(input_path),
+        "input_sha256": sha256_file(input_path),
+        "input_schema_versions": sorted({str(row.get("schema_version")) for row in pairs}),
+        "split_rule_versions": sorted({str(row.get("split_rule_version")) for row in pairs}),
+        "output_file": str(output_path),
+        "input_pairs": len(pairs),
+        "output_pairs": len(results),
+        "unique_pair_ids": len({row["pair_id"] for row in results}),
+        "pred_label_counts": dict(sorted(labels.items())),
+        "review_pairs": sum(bool(row["review_flag"]) for row in results),
+        "model_name": nli_judge.model_name,
+        "model_revision": nli_judge.revision,
+        "device": nli_judge.device,
+        "gpu_name": gpu_stats["gpu_name"],
+        "peak_gpu_memory_mb": gpu_stats["peak_gpu_memory_mb"],
+        "configured_batch_size": configured_batch_size,
+        "max_length": nli_judge.max_length,
+        "entailment_threshold": nli_judge.entailment_threshold,
+        "contradiction_threshold": nli_judge.contradiction_threshold,
+        "review_threshold": review_threshold,
         "started_at_utc": started_at.isoformat(),
         "finished_at_utc": datetime.now(timezone.utc).isoformat(),
         "elapsed_seconds": round(elapsed_seconds, 3),
@@ -413,6 +566,7 @@ def main() -> None:
     parser.add_argument("--max-length", type=int, default=512)
     parser.add_argument("--entailment-threshold", type=float, default=0.5)
     parser.add_argument("--contradiction-threshold", type=float, default=0.5)
+    parser.add_argument("--nli-review-threshold", type=float, default=0.6)
     parser.add_argument("--minicheck-model-path", default="models/Bespoke-MiniCheck-7B")
     parser.add_argument("--minicheck-threshold", type=float, default=0.5)
     parser.add_argument("--minicheck-max-model-len", type=int, default=8192)
@@ -427,13 +581,15 @@ def main() -> None:
         parser.error("--limit must be at least 1")
     if args.batch_size < 1:
         parser.error("--batch-size must be at least 1")
-    if args.data_format == "pair" and args.judge != "minicheck":
-        parser.error("pair data format currently supports --judge minicheck; NLI pair mode is section 3.6")
+    if args.data_format == "pair" and args.judge not in {"nli", "minicheck"}:
+        parser.error("pair data format supports --judge nli or minicheck")
     for name, value in (("entailment", args.entailment_threshold), ("contradiction", args.contradiction_threshold)):
         if not 0.0 <= value <= 1.0:
             parser.error(f"--{name}-threshold must be between 0 and 1")
     if not 0.0 <= args.minicheck_threshold <= 1.0:
         parser.error("--minicheck-threshold must be between 0 and 1")
+    if not 0.0 <= args.nli_review_threshold <= 1.0:
+        parser.error("--nli-review-threshold must be between 0 and 1")
 
     run_started_at = datetime.now(timezone.utc)
     run_started_clock = time.perf_counter()
@@ -465,13 +621,23 @@ def main() -> None:
     if args.limit is not None:
         samples = samples[:args.limit]
     if args.data_format == "pair":
-        run_id = args.run_id or make_run_id("minicheck")
-        results, batch_timings = run_minicheck_pairs(
-            samples,
-            minicheck_judge=minicheck_judge,
-            batch_size=args.batch_size,
-            run_id=run_id,
-        )
+        run_id = args.run_id or make_run_id(args.judge)
+        gpu_runtime_stats(getattr(nli_judge or minicheck_judge, "device", "cuda"), reset=True)
+        if args.judge == "nli":
+            results, batch_timings = run_nli_pairs(
+                samples,
+                nli_judge=nli_judge,
+                batch_size=args.batch_size,
+                run_id=run_id,
+                review_threshold=args.nli_review_threshold,
+            )
+        else:
+            results, batch_timings = run_minicheck_pairs(
+                samples,
+                minicheck_judge=minicheck_judge,
+                batch_size=args.batch_size,
+                run_id=run_id,
+            )
         output = Path(args.output)
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(
@@ -482,19 +648,37 @@ def main() -> None:
             Path(args.manifest_output)
             if args.manifest_output else output.with_suffix(".manifest.json")
         )
-        manifest = write_pair_manifest(
-            manifest_path,
-            run_id=run_id,
-            input_path=input_path,
-            output_path=output,
-            pairs=samples,
-            results=results,
-            batch_timings=batch_timings,
-            minicheck_judge=minicheck_judge,
-            configured_batch_size=args.batch_size,
-            started_at=run_started_at,
-            elapsed_seconds=time.perf_counter() - run_started_clock,
-        )
+        elapsed_seconds = time.perf_counter() - run_started_clock
+        if args.judge == "nli":
+            manifest = write_nli_pair_manifest(
+                manifest_path,
+                run_id=run_id,
+                input_path=input_path,
+                output_path=output,
+                pairs=samples,
+                results=results,
+                batch_timings=batch_timings,
+                nli_judge=nli_judge,
+                configured_batch_size=args.batch_size,
+                review_threshold=args.nli_review_threshold,
+                started_at=run_started_at,
+                elapsed_seconds=elapsed_seconds,
+                gpu_stats=gpu_runtime_stats(nli_judge.device),
+            )
+        else:
+            manifest = write_pair_manifest(
+                manifest_path,
+                run_id=run_id,
+                input_path=input_path,
+                output_path=output,
+                pairs=samples,
+                results=results,
+                batch_timings=batch_timings,
+                minicheck_judge=minicheck_judge,
+                configured_batch_size=args.batch_size,
+                started_at=run_started_at,
+                elapsed_seconds=elapsed_seconds,
+            )
         print(json.dumps({
             "run_id": run_id,
             "pairs": len(results),

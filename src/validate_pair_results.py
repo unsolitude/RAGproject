@@ -1,4 +1,4 @@
-"""Validate flat MiniCheck pair results without loading model dependencies."""
+"""Validate flat MiniCheck or NLI pair results without loading model dependencies."""
 
 from __future__ import annotations
 
@@ -8,15 +8,12 @@ import json
 from collections import Counter
 from pathlib import Path
 
-from data_schema import PAIR_RESULT_SCHEMA_VERSION
+from data_schema import NLI_PAIR_RESULT_SCHEMA_VERSION, PAIR_RESULT_SCHEMA_VERSION
 
 
 def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    content = path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return hashlib.sha256(content).hexdigest()
 
 
 def read_jsonl(path: Path) -> list[dict]:
@@ -53,17 +50,44 @@ def validate_pair_results(input_path: Path, result_path: Path, manifest_path: Pa
     run_ids = {row.get("run_id") for row in results}
     if run_ids != {manifest.get("run_id")}:
         raise ValueError("Result run_id does not match the manifest")
+    judge = manifest.get("judge")
+    if judge is None:
+        judge = "nli" if results[0].get("schema_version") == NLI_PAIR_RESULT_SCHEMA_VERSION else "minicheck"
+    expected_schema = (
+        NLI_PAIR_RESULT_SCHEMA_VERSION if judge == "nli" else PAIR_RESULT_SCHEMA_VERSION
+    )
+    if judge not in {"nli", "minicheck"}:
+        raise ValueError(f"Manifest has an unsupported judge: {judge}")
+
     for index, row in enumerate(results, start=1):
-        if row.get("schema_version") != PAIR_RESULT_SCHEMA_VERSION:
+        if row.get("schema_version") != expected_schema:
             raise ValueError(f"Result row {index} has an unsupported schema version")
         if row.get("pair_schema_version") != input_rows[index - 1].get("schema_version"):
             raise ValueError(f"Result row {index} has a mismatched pair schema version")
         if row.get("split_rule_version") != input_rows[index - 1].get("split_rule_version"):
             raise ValueError(f"Result row {index} has a mismatched split rule version")
-        if row.get("pred_label") not in {"supported", "unsupported"}:
+        valid_labels = {"supported", "conflict", "unsupported"} if judge == "nli" else {"supported", "unsupported"}
+        if row.get("pred_label") not in valid_labels:
             raise ValueError(f"Result row {index} has an invalid pred_label")
-        if row.get("prediction") != int(row["pred_label"] == "supported"):
-            raise ValueError(f"Result row {index} has inconsistent prediction and pred_label")
+        if judge == "minicheck":
+            if row.get("prediction") != int(row["pred_label"] == "supported"):
+                raise ValueError(f"Result row {index} has inconsistent prediction and pred_label")
+        else:
+            nli_scores = row.get("nli_scores")
+            required_scores = {"entailment", "contradiction", "neutral"}
+            if not isinstance(nli_scores, dict) or set(nli_scores) != required_scores:
+                raise ValueError(f"Result row {index} has invalid NLI scores")
+            if any(not isinstance(value, (int, float)) or not 0 <= value <= 1 for value in nli_scores.values()):
+                raise ValueError(f"Result row {index} has invalid NLI probabilities")
+            if abs(sum(nli_scores.values()) - 1.0) > 0.001:
+                raise ValueError(f"Result row {index} NLI probabilities do not sum to one")
+            expected_top_label = max(nli_scores, key=nli_scores.get)
+            if row.get("top_label") != expected_top_label:
+                raise ValueError(f"Result row {index} has an invalid top_label")
+            if row.get("top_score") != nli_scores[expected_top_label]:
+                raise ValueError(f"Result row {index} has an invalid top_score")
+            if not isinstance(row.get("review_flag"), bool):
+                raise ValueError(f"Result row {index} has an invalid review_flag")
         score = row.get("score")
         if not isinstance(score, (int, float)) or not 0 <= score <= 1:
             raise ValueError(f"Result row {index} has an invalid support score")
@@ -81,6 +105,7 @@ def validate_pair_results(input_path: Path, result_path: Path, manifest_path: Pa
         raise ValueError("Manifest label counts do not match the result file")
     return {
         "valid": True,
+        "judge": judge,
         "run_id": manifest["run_id"],
         "pairs": len(results),
         "pred_label_counts": dict(sorted(labels.items())),
@@ -91,7 +116,7 @@ def validate_pair_results(input_path: Path, result_path: Path, manifest_path: Pa
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Validate MiniCheck pair results and their run manifest.")
+    parser = argparse.ArgumentParser(description="Validate MiniCheck or NLI pair results and their run manifest.")
     parser.add_argument("--input-pairs", required=True)
     parser.add_argument("--results", required=True)
     parser.add_argument("--manifest", required=True)

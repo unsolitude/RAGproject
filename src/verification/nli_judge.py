@@ -78,6 +78,37 @@ class NLIJudge:
                 })
         return all_scores
 
+    def _classify_scores(self, scores: dict[str, float]) -> tuple[str, str]:
+        max_entailment = scores["entailment"]
+        max_contradiction = scores["contradiction"]
+        if max_entailment >= self.entailment_threshold and max_entailment >= max_contradiction:
+            return "supported", "NLI 判定文档蕴含该 claim。"
+        if max_contradiction >= self.contradiction_threshold and max_contradiction > max_entailment:
+            return "conflict", "NLI 判定文档与该 claim 矛盾。"
+        return "unsupported", "NLI 未达到蕴含或矛盾阈值，判为证据不足。"
+
+    def classify_documents(self, claims: list[str], documents: list[str]) -> list[dict]:
+        """Classify aligned document-claim pairs in batches."""
+        if len(claims) != len(documents):
+            raise ValueError("claims and documents must have the same length")
+        scores = self._score_pairs(documents, claims)
+        verdicts = []
+        for score_row in scores:
+            pred_label, explanation = self._classify_scores(score_row)
+            rounded_scores = {
+                label: round(score_row[label], 6)
+                for label in ("entailment", "contradiction", "neutral")
+            }
+            top_label = max(rounded_scores, key=rounded_scores.get)
+            verdicts.append({
+                "pred_label": pred_label,
+                "explanation": explanation,
+                "top_label": top_label,
+                "top_score": rounded_scores[top_label],
+                "nli_scores": rounded_scores,
+            })
+        return verdicts
+
     def classify(self, claim: str, evidence: list[dict]) -> dict:
         if not evidence:
             return {

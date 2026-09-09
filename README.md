@@ -62,6 +62,7 @@ RAGproject/
 ├── scripts/slurm/
 │   ├── download_minicheck.slurm  # 可选的模型下载脚本
 │   ├── run_minicheck_50.slurm    # 50-response pair 数据 GPU 实验
+│   ├── run_nli_50.slurm          # 同一 pair 数据的 NLI 三分类实验
 │   └── test_minicheck.slurm      # 单卡 GPU 冒烟测试
 ├── tests/
 │   ├── test_minicheck_judge.py   # 不加载 GPU 的接口测试
@@ -394,6 +395,28 @@ python src/validate_pair_results.py \
   --results outputs/minicheck_results_50-<JOB_ID>.jsonl \
   --manifest outputs/logs/minicheck-50-<JOB_ID>-manifest.json
 ```
+
+### NLI pair 模式（第二节 3.6）
+
+NLI 使用与 MiniCheck 完全相同的 414 个 `document-claim` pair，输出原生三分类概率、最高置信度以及低置信度复核标记。small 模型作为低成本基线保留；large 模型只在后续模型规模消融中另跑，不覆盖本次结果。
+
+先提交 1 个 pair 的测试任务，通过后再提交完整任务：
+
+```bash
+cd /home/kangzj/RAGproject
+sbatch --export=ALL,PAIR_LIMIT=1 scripts/slurm/run_nli_50.slurm
+sbatch scripts/slurm/run_nli_50.slurm
+```
+
+默认生成：
+
+```text
+outputs/nli_results_50-<JOB_ID>.jsonl
+outputs/logs/nli-50-<JOB_ID>-manifest.json
+outputs/logs/nli-50-<JOB_ID>.log
+```
+
+脚本默认离线读取 `models/huggingface` 缓存并使用独立环境 `/home/kangzj/venvs/ragtruth-nli`。如实际路径不同，可在提交时通过 `VENV_PATH`、`MODEL_CACHE_DIR` 或 `NLI_MODEL` 覆盖。manifest 记录 revision、batch size、设备、总耗时与 PyTorch 峰值显存；`top_score < 0.6` 的 pair 会加入复核。
 
 ## 命令行参数
 
