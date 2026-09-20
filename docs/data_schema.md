@@ -102,7 +102,29 @@ NLI pair 模式与 MiniCheck 使用相同的 `document`、`claim` 和输入顺�
 
 NLI manifest 还保存设备、GPU 名称、PyTorch 峰值显存、模型 revision、最大输入长度、三类阈值、低置信度阈值、逐批耗时和总耗时。峰值显存为当前推理进程的 `torch.cuda.max_memory_allocated`，不是整张显卡或其他进程的占用。
 
-## 7. 标签命名
+## 7. MiniCheck + NLI 融合结果
+
+Schema 版本：`ragtruth_merged_pair_result_v1`
+
+规则版本：`minicheck_nli_fusion_v1`
+
+融合结果继续保持每行一个 `pair_id`，并保存两个 Judge 的原始预测与分数：
+
+| 字段 | 说明 |
+| --- | --- |
+| `final_label` | `supported`、`conflict`、`unsupported` 或 `case_review` |
+| `fusion_decision` | 命中的确定性融合规则 |
+| `fusion_rule_version` | 固定规则版本，避免后续修改覆盖实验语义 |
+| `model_disagreement` | 两个 Judge 是否构成未决分歧 |
+| `review_flag/review_reason/review_reasons` | 是否复核、主要原因及完整原因列表 |
+| `minicheck_*` | MiniCheck run、标签、概率和模型信息 |
+| `nli_*` | NLI run、阈值标签、原生 top label、三类概率和模型 revision |
+
+融合使用 NLI 原生 `top_label`。确定性规则为：MiniCheck supported + NLI entailment → supported；MiniCheck unsupported + contradiction → conflict；MiniCheck unsupported + neutral → unsupported。其余组合不强行赋予三分类标签，而是输出 `case_review` 并追加 `model_disagreement`。
+
+同名 manifest 保存两个输入文件的规范化 SHA-256、来源 run ID、标签与规则分布、复核数量和复核原因分布。
+
+## 8. 标签命名
 
 项目统一使用小写标签：
 

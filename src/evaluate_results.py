@@ -91,10 +91,24 @@ def aggregate(rows: list[dict]) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate RAGTruth baseline results.")
-    parser.add_argument("--input", required=True)
+    parser.add_argument("--input", required=True, nargs="+")
+    parser.add_argument("--data-format", choices=["response", "pair"], default="response")
+    parser.add_argument("--input-pairs", help="Canonical pair input for strict alignment checks")
+    parser.add_argument("--output-dir", default="outputs", help="Pair report directory")
     parser.add_argument("--output", help="Optional JSON summary path")
     args = parser.parse_args()
-    summary = aggregate(list(read_jsonl(Path(args.input))))
+    if args.data_format == "pair":
+        if not args.input_pairs:
+            parser.error("--input-pairs is required for pair evaluation")
+        if args.output:
+            parser.error("Use --output-dir for pair evaluation")
+        from pair_evaluation import write_reports
+        summary = write_reports(args.input, args.input_pairs, args.output_dir)
+        print(json.dumps({"samples": summary["samples"], "methods": [m["method"] for m in summary["methods"]], "output_dir": args.output_dir}, indent=2))
+        return
+    if len(args.input) != 1:
+        parser.error("Response evaluation accepts exactly one input file")
+    summary = aggregate(list(read_jsonl(Path(args.input[0]))))
     rendered = json.dumps(summary, ensure_ascii=False, indent=2)
     print(rendered)
     if args.output:

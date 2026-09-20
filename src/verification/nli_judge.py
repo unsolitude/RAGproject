@@ -3,6 +3,21 @@
 from __future__ import annotations
 
 from pathlib import Path
+import hashlib
+
+
+def local_model_revision(path: Path) -> str:
+    """Fingerprint actual local model/tokenizer files, not an unrelated Hub revision."""
+    digest = hashlib.sha256()
+    files = sorted(p for p in path.iterdir() if p.is_file() and p.suffix in {".json", ".safetensors", ".model", ".txt"} and p.name not in {"MODEL_REVISION.txt", "SHA256SUMS.txt"})
+    if not (path / "config.json").is_file() or not any(p.suffix == ".safetensors" for p in files):
+        raise ValueError("Local model requires config.json and safetensors weights")
+    for file in files:
+        digest.update(file.name.encode("utf-8") + b"\0")
+        with file.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+    return "local-sha256:" + digest.hexdigest()
 
 
 class NLIJudge:
@@ -21,7 +36,7 @@ class NLIJudge:
     ) -> None:
         try:
             import torch
-            from transformers import AutoModelForSequenceClassification, AutoTokenizer
+            from transformers import AutoConfig, AutoModelForSequenceClassification, AutoTokenizer
         except ImportError as error:
             raise RuntimeError(
                 "NLI dependencies are missing. Install requirements-nli.txt in the project virtual environment."
@@ -40,8 +55,28 @@ class NLIJudge:
         else:
             self.device = device
 
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name, revision=revision, cache_dir=self.cache_dir)
-        self.model = AutoModelForSequenceClassification.from_pretrained(model_name, revision=revision, cache_dir=self.cache_dir)
+        local_path = Path(model_name).expanduser()
+        local = local_path.is_dir()
+        if local:
+            model_name = str(local_path.resolve())
+            self.model_name = model_name
+            self.revision = local_model_revision(local_path)
+        load_options = {"local_files_only": True} if local else {"revision": revision, "cache_dir": self.cache_dir}
+        config = AutoConfig.from_pretrained(model_name, **load_options)
+        if max_length < 4 or batch_size < 1:
+            raise ValueError("max_length must be >= 4 and batch_size must be >= 1")
+        if max_length > getattr(config, "max_position_embeddings", max_length):
+            raise ValueError("Requested max_length exceeds model configuration")
+        model_options = {}
+        if config.model_type == "modernbert":
+            config.reference_compile = False
+            model_options.update(attn_implementation="sdpa", torch_dtype=torch.float32)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name, **load_options)
+        self.model, loading = AutoModelForSequenceClassification.from_pretrained(
+            model_name, config=config, output_loading_info=True, **load_options, **model_options
+        )
+        if loading.get("missing_keys") or loading.get("mismatched_keys") or loading.get("error_msgs"):
+            raise RuntimeError(f"Incomplete model loading: {loading}")
         self.model.to(self.device)
         self.model.eval()
         self.label_ids = self._resolve_label_ids(self.model.config.id2label)

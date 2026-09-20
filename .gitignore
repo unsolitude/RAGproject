@@ -8,6 +8,9 @@ models/
 # Local datasets that can be downloaded/rebuilt
 data/ragtruth/raw/
 
+# learnings
+docs/
+
 # Python environments and caches
 .venv/
 .venv-*/

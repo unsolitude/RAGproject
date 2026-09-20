@@ -23,6 +23,7 @@ from data_schema import (
     get_response_text,
 )
 from split_claims import split_claims, split_claims_with_offsets
+from review_policy import review_fields, minicheck_confidence, REVIEW_POLICY_VERSION
 
 
 STOPWORDS = set("的 了 和 是 在 于 与 及 或 将 把 被 对 从 一个 一种 什么 哪些 是否 怎么样 如何".split())
@@ -157,6 +158,7 @@ def run_minicheck_pairs(
     minicheck_judge,
     batch_size: int,
     run_id: str,
+    review_threshold: float = 0.7,
 ) -> tuple[list[dict], list[dict]]:
     """Run aligned pair batches and return result rows plus batch timing records."""
     if batch_size < 1:
@@ -222,8 +224,7 @@ def run_minicheck_pairs(
                 "latency_measurement": "batch_wall_clock_amortized",
                 "batch_id": batch_id,
                 "batch_size": len(batch),
-                "review_flag": pair.get("review_flag", False),
-                "review_reasons": pair.get("review_reasons", []),
+                **review_fields(pair, minicheck_confidence(verdict["pred_label"], support_probability), "minicheck", review_threshold),
                 "source": pair.get("source"),
                 "task_type": pair.get("task_type"),
                 "split": pair.get("split"),
@@ -273,10 +274,6 @@ def run_nli_pairs(
         })
 
         for pair, verdict in zip(batch, verdicts):
-            low_confidence = verdict["top_score"] < review_threshold
-            review_reasons = list(pair.get("review_reasons", []))
-            if low_confidence and "low_nli_confidence" not in review_reasons:
-                review_reasons.append("low_nli_confidence")
             results.append({
                 "schema_version": NLI_PAIR_RESULT_SCHEMA_VERSION,
                 "pair_schema_version": pair.get("schema_version"),
@@ -307,8 +304,7 @@ def run_nli_pairs(
                 "latency_measurement": "batch_wall_clock_amortized",
                 "batch_id": batch_id,
                 "batch_size": len(batch),
-                "review_flag": bool(pair.get("review_flag", False) or low_confidence),
-                "review_reasons": review_reasons,
+                **review_fields(pair, verdict["top_score"], "nli", review_threshold),
                 "source": pair.get("source"),
                 "task_type": pair.get("task_type"),
                 "split": pair.get("split"),
@@ -355,6 +351,9 @@ def write_pair_manifest(
         "run_id": run_id,
         "data_format": "pair",
         "judge": "minicheck",
+        "review_policy_version": REVIEW_POLICY_VERSION,
+        "review_threshold": results[0]["review_threshold"] if results else None,
+        "review_pairs": sum(row["review_flag"] for row in results),
         "input_file": str(input_path),
         "input_sha256": sha256_file(input_path),
         "input_schema_versions": sorted({str(row.get("schema_version")) for row in pairs}),
@@ -403,6 +402,7 @@ def write_nli_pair_manifest(
         "run_id": run_id,
         "data_format": "pair",
         "judge": "nli",
+        "review_policy_version": REVIEW_POLICY_VERSION,
         "input_file": str(input_path),
         "input_sha256": sha256_file(input_path),
         "input_schema_versions": sorted({str(row.get("schema_version")) for row in pairs}),
@@ -566,7 +566,8 @@ def main() -> None:
     parser.add_argument("--max-length", type=int, default=512)
     parser.add_argument("--entailment-threshold", type=float, default=0.5)
     parser.add_argument("--contradiction-threshold", type=float, default=0.5)
-    parser.add_argument("--nli-review-threshold", type=float, default=0.6)
+    parser.add_argument("--nli-review-threshold", type=float, default=0.7)
+    parser.add_argument("--minicheck-review-threshold", type=float, default=0.7)
     parser.add_argument("--minicheck-model-path", default="models/Bespoke-MiniCheck-7B")
     parser.add_argument("--minicheck-threshold", type=float, default=0.5)
     parser.add_argument("--minicheck-max-model-len", type=int, default=8192)
@@ -590,6 +591,8 @@ def main() -> None:
         parser.error("--minicheck-threshold must be between 0 and 1")
     if not 0.0 <= args.nli_review_threshold <= 1.0:
         parser.error("--nli-review-threshold must be between 0 and 1")
+    if not 0.0 <= args.minicheck_review_threshold <= 1.0:
+        parser.error("--minicheck-review-threshold must be between 0 and 1")
 
     run_started_at = datetime.now(timezone.utc)
     run_started_clock = time.perf_counter()
@@ -637,6 +640,7 @@ def main() -> None:
                 minicheck_judge=minicheck_judge,
                 batch_size=args.batch_size,
                 run_id=run_id,
+                review_threshold=args.minicheck_review_threshold,
             )
         output = Path(args.output)
         output.parent.mkdir(parents=True, exist_ok=True)

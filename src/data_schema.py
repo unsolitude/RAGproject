@@ -10,6 +10,7 @@ PAIR_SCHEMA_VERSION = "ragtruth_doc_claim_pair_v3"
 RESULT_SCHEMA_VERSION = "ragtruth_baseline_result_v2"
 MINICHECK_PAIR_RESULT_SCHEMA_VERSION = "ragtruth_minicheck_pair_result_v1"
 NLI_PAIR_RESULT_SCHEMA_VERSION = "ragtruth_nli_pair_result_v1"
+MERGED_PAIR_RESULT_SCHEMA_VERSION = "ragtruth_merged_pair_result_v1"
 # Backward-compatible name used by the MiniCheck result path and existing tests.
 PAIR_RESULT_SCHEMA_VERSION = MINICHECK_PAIR_RESULT_SCHEMA_VERSION
 

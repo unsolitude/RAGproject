@@ -49,6 +49,7 @@ run_args=(
   --batch-size "${BATCH_SIZE}"
   --minicheck-model-path "${MODEL_PATH}"
   --minicheck-threshold 0.5
+  --minicheck-review-threshold "${REVIEW_THRESHOLD:-0.7}"
   --minicheck-max-model-len 8192
   --minicheck-tensor-parallel-size 1
   --minicheck-enable-prefix-caching

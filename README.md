@@ -54,6 +54,7 @@ RAGproject/
 │   ├── prepare_ragtruth.py       # 数据关联、筛选和随机抽样
 │   ├── split_claims.py           # 回答级样本展开为 document-claim pairs
 │   ├── run_baseline.py           # 规则化证据支持性基线
+│   ├── merge_judges.py           # MiniCheck + NLI 确定性融合
 │   ├── evaluate_results.py       # 批量指标与分布统计
 │   ├── validate_pair_results.py  # 检查 pair 结果与 manifest 一致性
 │   └── verification/
@@ -416,7 +417,33 @@ outputs/logs/nli-50-<JOB_ID>-manifest.json
 outputs/logs/nli-50-<JOB_ID>.log
 ```
 
-脚本默认离线读取 `models/huggingface` 缓存并使用独立环境 `/home/kangzj/venvs/ragtruth-nli`。如实际路径不同，可在提交时通过 `VENV_PATH`、`MODEL_CACHE_DIR` 或 `NLI_MODEL` 覆盖。manifest 记录 revision、batch size、设备、总耗时与 PyTorch 峰值显存；`top_score < 0.6` 的 pair 会加入复核。
+脚本默认离线读取 `models/huggingface` 缓存并使用独立环境 `/home/kangzj/venvs/ragtruth-nli`。如实际路径不同，可在提交时通过 `VENV_PATH`、`MODEL_CACHE_DIR` 或 `NLI_MODEL` 覆盖。manifest 记录 revision、batch size、设备、总耗时与 PyTorch 峰值显存；`top_score < 0.7` 的 pair 会加入复核。
+
+MiniCheck pair 模式按预测类别的置信度复核：supported 使用支持概率 p，unsupported 使用 1-p；置信度低于 0.7 时保留预测并加标记。规则版本为 `confidence_review_v1`，数据与模型复核分别保存在 `data_review_flag` 和 `model_review_flag`。此次修正针对第二节 pair 流程，历史 response 模式不变。已保存概率的结果可用 `src/refresh_review.py` 离线更新，再重新融合和评价，无需 GPU。最新报告见 [项目情况简报](docs/PROJECT_STATUS_2026-09-19.md)。
+
+### MiniCheck + NLI 融合（第二节 3.7）
+
+融合不需要 GPU。在 MiniCheck 与 NLI 对同一份 pair 数据完成推理后执行：
+
+```bash
+python src/merge_judges.py \
+  --minicheck outputs/minicheck_results_50-38632.jsonl \
+  --nli outputs/nli_results_50-39082.jsonl \
+  --output outputs/merged_results_50-38632-39082.jsonl \
+  --manifest-output outputs/merged_results_50-38632-39082-manifest.json
+```
+
+脚本会严格检查两个文件的 schema、`pair_id` 集合以及 claim、document、金标签和切分版本是否一致。融合使用 NLI 的原生 `top_label`：三种一致组合输出 `supported/conflict/unsupported`；其他组合输出 `case_review`，同时设置 `review_flag=true` 和 `review_reason=model_disagreement`。结果保留两个模型的 run ID、原始分数和模型版本。
+
+### Claim 级评价（第二节 3.8）
+
+三种方法的完整评价、拒判处理口径和结果解释见 [docs/evaluation.md](docs/evaluation.md)。不需要 GPU：
+
+```text
+python -B src/evaluate_results.py --data-format pair --input-pairs data/ragtruth/processed/doc_claim_pairs_50.jsonl --input outputs/minicheck_results_50-38632.jsonl outputs/nli_results_50-39082.jsonl outputs/merged_results_50-38632-39082.jsonl --output-dir outputs
+```
+
+生成 `metrics_summary.json`、`metrics_summary.csv`、`classification_report.txt` 和 `confusion_matrix.csv`。全量指标包含 case_review 拒判；另行报告判定覆盖率、复核比例和已分类子集指标。原有 response/span 评价命令不变。
 
 ## 命令行参数
 
@@ -426,6 +453,7 @@ outputs/logs/nli-50-<JOB_ID>.log
 python src/prepare_ragtruth.py --help
 python src/split_claims.py --help
 python src/run_baseline.py --help
+python src/merge_judges.py --help
 python src/evaluate_results.py --help
 ```
 
@@ -443,7 +471,7 @@ python src/evaluate_results.py --help
 
 ## 当前方法与局限
 
-当前项目提供 Rule、NLI 与 MiniCheck 三种 Support Verifier。Rule Judge 使用词项覆盖、否定极性和保守拒答规则；NLI Judge 使用预训练 DeBERTa 对 evidence-claim 文本对进行三分类；MiniCheck 使用本地 7B 模型进行二分类事实核验。它们仍存在明显限制：
+当前项目提供 Rule、NLI 与 MiniCheck 三种 Support Verifier，以及 MiniCheck + NLI 确定性融合。Rule Judge 使用词项覆盖、否定极性和保守拒答规则；NLI Judge 使用预训练 DeBERTa 对 evidence-claim 文本对进行三分类；MiniCheck 使用本地 7B 模型进行二分类事实核验。它们仍存在明显限制：
 
 - 词项重叠不等于语义蕴含；
 - 简单否定规则容易产生大量假阳性；
@@ -464,6 +492,7 @@ python src/evaluate_results.py --help
 - [x] 加入 NLI Support Judge
 - [ ] 固化 NLI 阈值搜索并选择开发集最优配置
 - [x] 加入 MiniCheck LLM Judge 基线
+- [x] 实现 MiniCheck + NLI 融合与分歧复核队列
 - [ ] 在开发集上完成 MiniCheck 阈值搜索
 - [ ] 实现答案 atomic-fact 切分
 - [ ] 实现证据过滤与消融实验
@@ -491,6 +520,10 @@ python src/evaluate_results.py --help
 }
 ```
 
-## 许可
+## ModernBERT NLI 重跑
+
+已下载 `models/ModernBERT-large-nli` 的云端用户，请按 [ModernBERT 重跑指南](docs/modernbert_rerun.md) 使用独立环境和新 SLURM 入口。支持单样本、开发集与完整实验，保留历史结果，并重新生成评价及可选融合结果。
+
+## 数据与软件许可
 
 RAGTruth 数据及标注遵循其上游仓库声明的许可；使用或再分发前请检查上游 `LICENSE`。本仓库当前尚未声明独立的软件许可证。
