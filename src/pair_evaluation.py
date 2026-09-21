@@ -50,6 +50,8 @@ def indexed(rows):
 
 def classification(gold, predicted):
     """Abstentions are FNs for their gold class, never a fourth gold class."""
+    if len(gold) != len(predicted):
+        raise ValueError("Gold and prediction lengths must match")
     matrix = [[0 for _ in LABELS] for _ in LABELS]
     abstentions = dict.fromkeys(LABELS, 0)
     for g, p in zip(gold, predicted):
@@ -127,10 +129,18 @@ def evaluate_pairs(rows, input_pairs):
         "case_review_count": len(rows) - len(decided),
         "review_count": sum(r["review_flag"] for r in rows),
         "review_rate": sum(r["review_flag"] for r in rows) / len(rows),
+        "review_policy_metadata": {
+            key: sorted({str(r.get(key, "legacy_unspecified")) for r in rows})
+            for key in (("minicheck_review_policy_version", "nli_review_policy_version",
+                         "minicheck_review_threshold", "nli_review_threshold")
+                        if method == "merged" else ("review_policy_version", "review_threshold"))
+        },
         "review_reason_counts": dict(Counter(reason for r in rows for reason in set(r.get("review_reasons", [])))),
         "binary_non_supported": {
             "positive_label": "conflict_or_unsupported", "tp": tp, "fp": fp, "fn": fn, "tn": tn,
             "abstentions": pred.count("case_review"),
+            "abstentions_positive_gold": sum(g != "supported" and p == "case_review" for g, p in zip(gold, pred)),
+            "abstentions_negative_gold": sum(g == "supported" and p == "case_review" for g, p in zip(gold, pred)),
             "precision": ratio(tp, tp + fp), "recall": ratio(tp, tp + fn),
             "f1": ratio(2 * tp, 2 * tp + fp + fn), "accuracy": (tp + tn) / len(rows),
         },

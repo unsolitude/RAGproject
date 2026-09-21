@@ -1,5 +1,7 @@
 # RAGTruth span 到 claim 标签的映射规范
 
+预测标签及评价口径的统一约定见 [pair 评价协议](pair_evaluation_protocol.md)。金标签投影只在生成 pair 时完成；评价器不重新投影，也不根据模型预测更改金标签。
+
 ## 1. 适用范围
 
 本规范用于把 response 级 RAGTruth 幻觉字符区间投影为 sentence-level claim 金标签。实现位于 `src/split_claims.py`，规则版本为 `ragtruth_span_overlap_v1`，输出 pair schema 为 `ragtruth_doc_claim_pair_v3`。

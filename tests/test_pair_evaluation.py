@@ -14,6 +14,10 @@ from data_schema import NLI_PAIR_RESULT_SCHEMA_VERSION, MERGED_PAIR_RESULT_SCHEM
 
 
 class PairEvaluationTests(unittest.TestCase):
+    def test_classification_rejects_length_mismatch(self):
+        with self.assertRaisesRegex(ValueError, "lengths"):
+            classification(["supported"], [])
+
     def fixture(self):
         pairs = [{"pair_id": "p1", "qid": "q1", "claim_id": "c1", "document": "doc",
                   "claim": "claim", "gold_label": "supported", "gold_projection_version": "g1",
@@ -70,6 +74,8 @@ class PairEvaluationTests(unittest.TestCase):
         self.assertIsNone(result["decided_only"])
         self.assertEqual(result["full_set"]["accuracy"], 0)
         self.assertEqual(result["decision_coverage"], 0)
+        self.assertEqual(result["binary_non_supported"]["abstentions_negative_gold"], 1)
+        self.assertEqual(result["binary_non_supported"]["abstentions_positive_gold"], 0)
         rows[0]["final_label"] = "supported"
         result = evaluate_pairs(rows, pairs)
         self.assertEqual(result["decision_coverage"], 1)
