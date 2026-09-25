@@ -94,6 +94,8 @@ def main() -> None:
     parser.add_argument("--input", required=True, nargs="+")
     parser.add_argument("--data-format", choices=["response", "pair"], default="response")
     parser.add_argument("--input-pairs", help="Canonical pair input for strict alignment checks")
+    parser.add_argument("--audit-manifest", help="Use a frozen audited subset after checking the original run")
+    parser.add_argument("--require-final", action="store_true", help="Reject unsigned or provisional audit decisions")
     parser.add_argument("--output-dir", default="outputs", help="Pair report directory")
     parser.add_argument("--output", help="Optional JSON summary path")
     args = parser.parse_args()
@@ -103,7 +105,8 @@ def main() -> None:
         if args.output:
             parser.error("Use --output-dir for pair evaluation")
         from pair_evaluation import write_reports
-        summary = write_reports(args.input, args.input_pairs, args.output_dir)
+        summary = write_reports(args.input, args.input_pairs, args.output_dir,
+                                audit_manifest=args.audit_manifest, require_final=args.require_final)
         print(json.dumps({"samples": summary["samples"], "methods": [m["method"] for m in summary["methods"]], "output_dir": args.output_dir}, indent=2))
         return
     if len(args.input) != 1:

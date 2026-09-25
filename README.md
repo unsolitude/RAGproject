@@ -4,7 +4,9 @@
 
 本仓库当前以 [RAGTruth](https://github.com/ParticleMedia/RAGTruth) 为基准数据集，建立一个透明、零外部依赖的规则基线。系统将模型回答切分为句级陈述，与给定检索上下文逐条对齐，并输出 `supported`、`conflict` 或 `unsupported` 标签，同时计算回答级与字符级 span 指标。
 
-> 当前状态：已跑通单样本和固定随机种子抽取的 200 条 QA 测试子集。现有规则方法仅用于建立可复现下限，不代表最终研究方法。
+> 当前状态：除规则基线外，已完成 50-response 开发集上的 MiniCheck、NLI 与融合实验，并冻结 234 条助手审定的 `dev50` pair，可直接开展开发集对照实验。它不是独立人工金标；`test200` 与冲突挑战集仍是候选版。使用方法见 [EVAL_V1_GUIDE.md](EVAL_V1_GUIDE.md)。
+
+目录中哪些文件需要保留、哪些已归档，见 [PROJECT_DIRECTORY.md](PROJECT_DIRECTORY.md)。
 
 ## 研究目标
 

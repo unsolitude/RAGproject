@@ -1,0 +1,52 @@
+{
+  "status": "provisional_codex_assisted",
+  "created_at": "2026-09-25",
+  "splits": [
+    {
+      "name": "dev50",
+      "original_count": 414,
+      "included_count": 238,
+      "label_counts": {
+        "conflict": 2,
+        "supported": 193,
+        "unsupported": 43
+      }
+    },
+    {
+      "name": "test200",
+      "original_count": 1370,
+      "included_count": 1031,
+      "label_counts": {
+        "conflict": 8,
+        "supported": 959,
+        "unsupported": 64
+      }
+    },
+    {
+      "name": "conflict_challenge",
+      "original_count": 213,
+      "included_count": 134,
+      "label_counts": {
+        "conflict": 22,
+        "supported": 106,
+        "unsupported": 6
+      }
+    }
+  ],
+  "test_challenge_response_overlap": [
+    "12219",
+    "12297",
+    "12471",
+    "13532",
+    "14323",
+    "15008",
+    "15716"
+  ],
+  "test_challenge_response_overlap_count": 7,
+  "sampling": {
+    "dev50": "Existing 50 QA train responses (subset of train_500_seed2026)",
+    "test200": "Existing random QA test 200 responses, seed 42",
+    "conflict_challenge": "All 26 good-quality QA test responses with an original Conflict span; separate diagnostic, not pooled with test200"
+  },
+  "warning": "Test and challenge labels are span-projection proposals, not source-level or researcher-adjudicated gold."
+}
