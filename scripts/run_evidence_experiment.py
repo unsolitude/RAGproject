@@ -29,6 +29,24 @@ def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def frozen_pair_hash_mode(path: Path, expected: str) -> str:
+    """Accept the frozen bytes or Git's line-ending-only conversion, never changed JSONL."""
+    data = path.read_bytes()
+    if hashlib.sha256(data).hexdigest() == expected:
+        return "exact"
+    lf = data.replace(b"\r\n", b"\n")
+    crlf = lf.replace(b"\n", b"\r\n")
+    if hashlib.sha256(lf).hexdigest() == expected:
+        return "lf_conversion"
+    if hashlib.sha256(crlf).hexdigest() == expected:
+        return "crlf_conversion"
+    raise ValueError(
+        f"Frozen dev50 pair hash mismatch: manifest={expected}, actual={hashlib.sha256(data).hexdigest()}, "
+        f"LF={hashlib.sha256(lf).hexdigest()}, CRLF={hashlib.sha256(crlf).hexdigest()}. "
+        "Check that dev50_pairs.jsonl and dev50_manifest.json come from the same commit."
+    )
+
+
 def read_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
@@ -86,8 +104,9 @@ def prepare(directory: Path, model_path: Path, limit: int | None, seed: int = 42
     if directory.exists():
         raise FileExistsError(f"Output directory already exists: {directory}")
     source_manifest = json.loads(FROZEN_MANIFEST.read_text(encoding="utf-8"))
-    if digest(FROZEN) != source_manifest["pairs_sha256"] or source_manifest["status"] != "assistant_adjudicated_dev_only":
-        raise ValueError("Frozen dev50 manifest or pair hash is invalid")
+    if source_manifest.get("status") != "assistant_adjudicated_dev_only":
+        raise ValueError(f"Unexpected frozen dev50 status: {source_manifest.get('status')!r}")
+    frozen_hash_mode = frozen_pair_hash_mode(FROZEN, source_manifest["pairs_sha256"])
     pairs = read_jsonl(FROZEN)
     if len(pairs) != 234 or [r["pair_id"] for r in pairs] != source_manifest["included_ids"]:
         raise ValueError("Frozen dev50 IDs do not match the manifest")
@@ -140,6 +159,7 @@ def prepare(directory: Path, model_path: Path, limit: int | None, seed: int = 42
         "sample_kind": "smoke_prefix" if limit is not None else "complete_dev50",
         "pair_count": len(pairs), "pair_ids": [p["pair_id"] for p in pairs],
         "frozen_pairs_sha256": digest(FROZEN), "frozen_manifest_sha256": digest(FROZEN_MANIFEST),
+        "frozen_pairs_hash_mode": frozen_hash_mode,
         "responses_sha256": digest(RESPONSES), "model_path": str(model_path),
         "model_revision": model_revision,
         "selection_query": "claim_only", "random_seed": seed, "budget_tokens": budget,

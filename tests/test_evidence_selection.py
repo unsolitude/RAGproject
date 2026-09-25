@@ -11,7 +11,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 from evidence_selection import bm25_scores, chunk_context, random_scores, select_chunks, token_count  # noqa: E402
 from evaluate_evidence_selection import paired_changes, validate_variant  # noqa: E402
-from run_evidence_experiment import materialize_bge, prepare, read_jsonl  # noqa: E402
+from run_evidence_experiment import frozen_pair_hash_mode, materialize_bge, prepare, read_jsonl  # noqa: E402
 from score_bge_chunks import score_rows  # noqa: E402
 
 
@@ -23,6 +23,19 @@ class FakeTokenizer:
 class EvidenceSelectionTests(unittest.TestCase):
     def setUp(self):
         self.tokenizer = FakeTokenizer()
+
+    def test_frozen_hash_accepts_only_line_ending_conversion(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "pairs.jsonl"
+            crlf = b'{"pair_id":"a"}\r\n{"pair_id":"b"}\r\n'
+            expected = hashlib.sha256(crlf).hexdigest()
+            path.write_bytes(crlf)
+            self.assertEqual(frozen_pair_hash_mode(path, expected), "exact")
+            path.write_bytes(crlf.replace(b"\r\n", b"\n"))
+            self.assertEqual(frozen_pair_hash_mode(path, expected), "crlf_conversion")
+            path.write_bytes(b'{"pair_id":"changed"}\n{"pair_id":"b"}\n')
+            with self.assertRaisesRegex(ValueError, "pair hash mismatch"):
+                frozen_pair_hash_mode(path, expected)
 
     def test_offsets_and_long_sentence(self):
         text = "Alpha binds beta. It raises the level. " + "longword " * 90
