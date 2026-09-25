@@ -8,6 +8,8 @@
 
 目录中哪些文件需要保留、哪些已归档，见 [PROJECT_DIRECTORY.md](PROJECT_DIRECTORY.md)。
 
+第三节的四组证据选择实验脚本与云端运行步骤见 [EVIDENCE_SELECTION_GUIDE.md](EVIDENCE_SELECTION_GUIDE.md)。
+
 ## 研究目标
 
 本项目关注以下问题：
