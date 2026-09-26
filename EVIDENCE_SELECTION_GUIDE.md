@@ -1,5 +1,7 @@
 # dev50 证据选择实验：云端运行指南
 
+第一轮完整结果已保存在本地 `outputs/evidence_runs/dev50-39484/`。后续固定集合的顺序对照见 [ORDER_CONTROL_GUIDE.md](ORDER_CONTROL_GUIDE.md)，五个真实错例见 [EVIDENCE_CASE_ANALYSIS.md](EVIDENCE_CASE_ANALYSIS.md)。不要覆盖第一轮输出。
+
 本实验固定 [`dev50_pairs.jsonl`](data/ragtruth/eval_dev50_assistant_v1/dev50_pairs.jsonl) 中的 234 条 claim 与助手审定 gold，固定 ModernBERT-large-nli 判断器。`full_source` 使用完整来源作参考；`random_budget`、`bm25_budget`、`bge_budget` 共用来源内候选池，最多选 3 块，ModernBERT 的 **document + claim 总输入不超过 512 tokens**。模型本身的最大输入长度仍设为 2048。Full 不属于等预算对照。
 
 ## 运行前准备

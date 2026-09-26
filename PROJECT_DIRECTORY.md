@@ -1,6 +1,6 @@
 # 项目目录与归档说明
 
-本说明区分**当前研究输入**、**可复现历史结果**和**已归档中间稿**。此次整理只移动已被后续版本替代的旧审计稿与一次临时冒烟检查；没有删除 RAGTruth 原始数据、模型权重、pair、预测或日志。
+本说明区分**当前研究输入**、**可复现历史结果**和**已归档中间稿**。最后更新于 2026-09-26：已归档 5 条证据选择冒烟运行及四份过时 Markdown 快照；没有删除 RAGTruth 原始数据、模型权重、pair、预测或日志。逐项映射和恢复说明见[归档索引](archive/README.md)。
 
 ## `data/ragtruth/`
 
@@ -27,6 +27,10 @@
 | `lesson3/audit/` | 当前 `claims_audit_v7.jsonl`、manifest、审核报告；保留 |
 | `lesson3/eval_v1_dev/` | 审计口径下已重算的开发集指标；保留，但仍属暂定结果 |
 | `lesson3/eval_dev50_assistant_v1/` | 234 条冻结开发 pair 的 MiniCheck/NLI/融合重算指标；当前开发主线 |
+| `evidence_runs/dev50-39484/` | 最新完整四组证据选择实验：234 条 pair、实际输入、选择记录、预测、指标和配对变化 |
+| `lesson3/order_runs/dev50-39484-prepared/` | 七组固定证据集合的顺序对照输入，234 条/组；仅 prepared，尚无新增推理结果 |
+| `lesson3/cases/dev50-39484/` | 五个已核对错例的原始全文、候选块、概率、结果行号及来源哈希 |
+| `archived/smoke_runs/dev50-39483/` | 已通过的 5 条四组冒烟实验；不参与完整开发集指标 |
 | `archived/` | 较早的 response 实验、旧审计稿和临时检查；可恢复，不参与当前主线 |
 | `logs/` | 环境记录；保留 |
 
@@ -39,5 +43,9 @@
 - `tests/`：回归测试；保留。
 - `models/`：本地权重与缓存，已忽略；不在此次整理范围。
 - 根目录的 `README.md`、`CLAIM_AUDIT_GUIDE.md`、`EVAL_V1_GUIDE.md`、`NLI_COMPARISON_REPORT.md`：当前操作与结果说明；保留。
+- `archive/docs/2026-09-26/`：第二节任务清单、9 月 19 日状态简报及两篇旧学习快照；内容保持原样，文中的相对路径按原位置理解。
+- `docs/learning/07_metrics_and_current_results.md` 与 `09_progress_and_research_roadmap.md`：当前简短入口，链接到旧教材与最新实验，避免旧阶段结论冒充当前进度。
+
+仍需保留 `qa_one.jsonl`、`doc_claim_pairs.jsonl`、`scripts/slurm/test_minicheck.slurm` 及 `tests/`：它们是可复用的教程输入和测试入口，不是已完成的冒烟输出。两个 ModernBERT 历史 suite 内的单样本结果与整次运行清单有关，也保留原位置，不拆散成不完整的运行记录。
 
 此次归档的旧审计稿位于 `outputs/archived/lesson3_audit_pre_v7/`，临时冒烟报告位于 `outputs/archived/temporary_checks/eval_v1_dev_smoke/`。详细恢复说明见 `outputs/archived/README.md`。

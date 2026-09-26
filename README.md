@@ -4,11 +4,13 @@
 
 本仓库当前以 [RAGTruth](https://github.com/ParticleMedia/RAGTruth) 为基准数据集，建立一个透明、零外部依赖的规则基线。系统将模型回答切分为句级陈述，与给定检索上下文逐条对齐，并输出 `supported`、`conflict` 或 `unsupported` 标签，同时计算回答级与字符级 span 指标。
 
-> 当前状态：除规则基线外，已完成 50-response 开发集上的 MiniCheck、NLI 与融合实验，并冻结 234 条助手审定的 `dev50` pair，可直接开展开发集对照实验。它不是独立人工金标；`test200` 与冲突挑战集仍是候选版。使用方法见 [EVAL_V1_GUIDE.md](EVAL_V1_GUIDE.md)。
+> 当前状态（2026-09-26）：已冻结 234 条助手审定的 `dev50` pair，并完成 Full / Random / BM25 / BGE 四组实验，完整结果位于 `outputs/evidence_runs/dev50-39484/`。它不是独立人工金标；`test200` 与冲突挑战集仍是候选版。使用方法见 [EVAL_V1_GUIDE.md](EVAL_V1_GUIDE.md)。历史文档与冒烟产物见[归档索引](archive/README.md)。
 
 目录中哪些文件需要保留、哪些已归档，见 [PROJECT_DIRECTORY.md](PROJECT_DIRECTORY.md)。
 
 第三节的四组证据选择实验脚本与云端运行步骤见 [EVIDENCE_SELECTION_GUIDE.md](EVIDENCE_SELECTION_GUIDE.md)。
+
+后续[证据顺序控制](ORDER_CONTROL_GUIDE.md)已准备七组输入和云端脚本，新增推理尚待运行；[五个错例分析](EVIDENCE_CASE_ANALYSIS.md)基于 Job 39484 的真实预测。
 
 ## 研究目标
 
@@ -423,7 +425,7 @@ outputs/logs/nli-50-<JOB_ID>.log
 
 脚本默认离线读取 `models/huggingface` 缓存并使用独立环境 `/home/kangzj/venvs/ragtruth-nli`。如实际路径不同，可在提交时通过 `VENV_PATH`、`MODEL_CACHE_DIR` 或 `NLI_MODEL` 覆盖。manifest 记录 revision、batch size、设备、总耗时与 PyTorch 峰值显存；`top_score < 0.7` 的 pair 会加入复核。
 
-MiniCheck pair 模式按预测类别的置信度复核：supported 使用支持概率 p，unsupported 使用 1-p；置信度低于 0.7 时保留预测并加标记。规则版本为 `confidence_review_v1`，数据与模型复核分别保存在 `data_review_flag` 和 `model_review_flag`。此次修正针对第二节 pair 流程，历史 response 模式不变。已保存概率的结果可用 `src/refresh_review.py` 离线更新，再重新融合和评价，无需 GPU。最新报告见 [项目情况简报](docs/PROJECT_STATUS_2026-09-19.md)。
+MiniCheck pair 模式按预测类别的置信度复核：supported 使用支持概率 p，unsupported 使用 1-p；置信度低于 0.7 时保留预测并加标记。规则版本为 `confidence_review_v1`，数据与模型复核分别保存在 `data_review_flag` 和 `model_review_flag`。此次修正针对第二节 pair 流程，历史 response 模式不变。已保存概率的结果可用 `src/refresh_review.py` 离线更新，再重新融合和评价，无需 GPU。该修正的历史记录见 [9 月 19 日简报](archive/docs/2026-09-26/docs/PROJECT_STATUS_2026-09-19.md)，当前开发主线见 [dev50 审计报告](DEV50_AUDIT_REPORT.md)。
 
 ### MiniCheck + NLI 融合（第二节 3.7）
 
