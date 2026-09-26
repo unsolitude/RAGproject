@@ -10,7 +10,7 @@
 
 第三节的四组证据选择实验脚本与云端运行步骤见 [EVIDENCE_SELECTION_GUIDE.md](EVIDENCE_SELECTION_GUIDE.md)。
 
-后续[证据顺序控制](ORDER_CONTROL_GUIDE.md)已准备七组输入和云端脚本，新增推理尚待运行；[五个错例分析](EVIDENCE_CASE_ANALYSIS.md)基于 Job 39484 的真实预测。
+后续[证据顺序控制](ORDER_CONTROL_GUIDE.md)已完成 Job 39496 的七组运行；[五个错例分析](EVIDENCE_CASE_ANALYSIS.md)基于 Job 39484 的真实预测。下一步 [k=1/3/5 与关键证据保留分析](K_SWEEP_GUIDE.md)已交付脚本并准备输入，新增 GPU 推理尚未运行。
 
 ## 研究目标
 

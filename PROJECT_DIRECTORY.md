@@ -30,6 +30,8 @@
 | `evidence_runs/dev50-39484/` | 最新完整四组证据选择实验：234 条 pair、实际输入、选择记录、预测、指标和配对变化 |
 | `lesson3/order_runs/dev50-39484-prepared/` | 七组固定证据集合的顺序对照输入，234 条/组；仅 prepared，尚无新增推理结果 |
 | `lesson3/cases/dev50-39484/` | 五个已核对错例的原始全文、候选块、概率、结果行号及来源哈希 |
+| `lesson3/order_runs/order_runs/dev50-39496/` | 已下载的七组顺序对照真实结果；保留下载时双层目录 |
+| `lesson3/k_runs/dev50-39484-prepared/` | k=1/3/5 九组和两个 Full 参照，共 11 组输入与六案例证据保留统计；尚无 GPU 预测 |
 | `archived/smoke_runs/dev50-39483/` | 已通过的 5 条四组冒烟实验；不参与完整开发集指标 |
 | `archived/` | 较早的 response 实验、旧审计稿和临时检查；可恢复，不参与当前主线 |
 | `logs/` | 环境记录；保留 |
@@ -41,6 +43,7 @@
 - `src/`：数据准备、切分、Judge、融合及统一评价程序；保留。
 - `scripts/`：SLURM 和可复现检查/数据集构建入口；保留 `build_audited_eval.py`（候选三集）与 `freeze_dev50_assistant.py`（当前冻结开发集）。
 - `tests/`：回归测试；保留。
+- `configs/dev50_key_evidence_v1.json`：六个诊断案例的来源证据标注，不参与排序或 gold 修改；操作说明见 [K_SWEEP_GUIDE.md](K_SWEEP_GUIDE.md)。
 - `models/`：本地权重与缓存，已忽略；不在此次整理范围。
 - 根目录的 `README.md`、`CLAIM_AUDIT_GUIDE.md`、`EVAL_V1_GUIDE.md`、`NLI_COMPARISON_REPORT.md`：当前操作与结果说明；保留。
 - `archive/docs/2026-09-26/`：第二节任务清单、9 月 19 日状态简报及两篇旧学习快照；内容保持原样，文中的相对路径按原位置理解。

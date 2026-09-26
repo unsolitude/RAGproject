@@ -1,0 +1,57 @@
+{
+  "version": "dev50_key_evidence_v1",
+  "status": "assistant_reviewed_diagnostic_only",
+  "annotation_blinded": false,
+  "sampling": "Purposive: five previously examined cases plus the other frozen conflict claim. Not representative of all dev50 pairs.",
+  "scope": "Coverage of annotated source-side textual requirements, not complete corpus gold evidence recall or proof of logical sufficiency.",
+  "cases": [
+    {
+      "pair_id": "11876_c01",
+      "claim": "Based on the given passages, we can say that the primary difference between single cream and double cream in Britain is the butterfat content",
+      "gold_label": "supported",
+      "reason": "Retain the explicit comparison of fat content; this diagnoses evidence presence without establishing the word primary independently.",
+      "requirements": [{"id": "fat_comparison", "alternatives": [{"source_id": "passage_3", "quote": "Double cream has a higher fat content than single."}, {"source_id": "passage_1", "quote": "In Britain, single cream refers to a milk product that has between 10 percent and 12 percent butterfat.This relatively low level of butterfat creates a thin liquid similar to the U.S. product called half and half. In contrast, double cream in Britain refers to a cream product containing 48 percent butterfat."}]}]
+    },
+    {
+      "pair_id": "11876_c05",
+      "claim": "Single cream also has a higher binding ability due to its higher fat content",
+      "gold_label": "conflict",
+      "reason": "Both the comparison direction and the causal binding sentence are required to interpret it as double cream.",
+      "requirements": [
+        {"id": "comparison_and_antecedent", "alternatives": [{"source_id": "passage_3", "quote": "Double cream has a higher fat content than single."}]},
+        {"id": "binding_consequence", "alternatives": [{"source_id": "passage_3", "quote": "Because of the higher fat content it will bind with the flour ion the pasta to produce a thicker sauce."}]}
+      ]
+    },
+    {
+      "pair_id": "14244_c05",
+      "claim": "This design is meant to keep the snorkel dry even when underwater",
+      "gold_label": "supported",
+      "reason": "Dry-snorkel identity, submersion and sealing are all retained. This design remains a referential limitation in the frozen claim.",
+      "requirements": [{"id": "dry_snorkel_seal", "alternatives": [{"source_id": "passage_3", "quote": "The dry snorkel has a valve/hinge mechanism at the top. When you submerge underwater, accidentally or purposely, the hinge reacts via a float mechanism and closes onto the top of the tube and seals it which prevents water from filling the tube."}]}]
+    },
+    {
+      "pair_id": "14959_c02",
+      "claim": "Another option is to dip the bagels in water, shake off the excess, and heat them uncovered in the oven for 10 to 15 minutes",
+      "gold_label": "supported",
+      "reason": "Either source occurrence of the explicit reheating instruction supplies this textual requirement.",
+      "requirements": [{"id": "dip_and_heat", "alternatives": [{"source_id": "passage_1", "quote": "Dip bagels in water, shake off, then heat uncovered for 10 to 15 minutes."}, {"source_id": "passage_2", "quote": "Dip bagels in water, shake off, then heat uncovered for 10 to 15 minutes."}]}]
+    },
+    {
+      "pair_id": "17621_c10",
+      "claim": "Apply multiple coats as needed",
+      "gold_label": "supported",
+      "reason": "The second/optional third paint-coat instruction is the source anchor; no query words are added to the frozen claim.",
+      "requirements": [{"id": "multiple_coats", "alternatives": [{"source_id": "passage_3", "quote": "for your initial coat of paint to fully dry before applying your second and, if need be, third coat."}]}]
+    },
+    {
+      "pair_id": "13030_c06",
+      "claim": "Simply subtract those notes that cannot be played together to create a piano-friendly version of the chord",
+      "gold_label": "conflict",
+      "reason": "The guitar limitation plus the piano contrast must both survive. Frozen assistant conflict label is retained; those notes has contextual dependence.",
+      "requirements": [
+        {"id": "guitar_limit", "alternatives": [{"source_id": "passage_1", "quote": "notes need to be subtracted from chords on a guitar because of string organization. For example, a 9th chord has 5 notes, but the guitar can only play four different notes at a time."}]},
+        {"id": "piano_contrast", "alternatives": [{"source_id": "passage_1", "quote": "The piano has all five."}]}
+      ]
+    }
+  ]
+}
